@@ -45,7 +45,10 @@ if [ -f "docker-compose.yml" ]; then
     
     # Удаляем старый образ, чтобы гарантировать пересборку
     echo -e "${YELLOW}Удаление старого образа...${NC}"
-    docker rmi support-bot-support-bot:latest 2>/dev/null || docker rmi $(docker-compose images -q) 2>/dev/null || true
+    # Пытаемся удалить образ по разным возможным именам
+    docker rmi support-bot-support-bot:latest 2>/dev/null || true
+    docker rmi support-bot_support-bot:latest 2>/dev/null || true
+    docker rmi $(docker images | grep support-bot | awk '{print $3}') 2>/dev/null || true
     
     # Очистка неиспользуемых образов
     docker image prune -f 2>/dev/null || true
@@ -82,26 +85,38 @@ if [ ! -f "bot/bot.py" ] || [ ! -f "docker-compose.yml" ] || [ ! -f "requirement
     exit 1
 fi
 
+# Проверка, что requirements.txt содержит aiosqlite
+if ! grep -q "aiosqlite" requirements.txt; then
+    echo -e "${RED}Ошибка: requirements.txt не содержит aiosqlite!${NC}"
+    echo -e "${YELLOW}Добавляю aiosqlite в requirements.txt...${NC}"
+    echo "aiosqlite==0.19.0" >> requirements.txt
+fi
+
 echo -e "${GREEN}Файлы успешно обновлены!${NC}\n"
+echo -e "${YELLOW}Содержимое requirements.txt:${NC}"
+cat requirements.txt
+echo ""
 
 # Пересборка и запуск
 echo -e "${YELLOW}Пересборка контейнера (это может занять время)...${NC}"
 if command -v docker-compose &> /dev/null; then
+    # Полная пересборка без кеша
     docker-compose build --no-cache --pull
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Ошибка при сборке образа!${NC}"
+        exit 1
+    fi
     echo -e "${YELLOW}Запуск бота...${NC}"
-    docker-compose up -d
+    docker-compose up -d --force-recreate
 else
+    # Полная пересборка без кеша
     docker compose build --no-cache --pull
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Ошибка при сборке образа!${NC}"
+        exit 1
+    fi
     echo -e "${YELLOW}Запуск бота...${NC}"
-    docker compose up -d
-fi
-
-# Принудительный перезапуск для применения изменений
-echo -e "${YELLOW}Перезапуск контейнера для применения изменений...${NC}"
-if command -v docker-compose &> /dev/null; then
-    docker-compose restart
-else
-    docker compose restart
+    docker compose up -d --force-recreate
 fi
 
 # Проверка статуса
