@@ -1,0 +1,11 @@
+services:
+  support-bot:
+    build: .
+    container_name: support-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: 1
+    volumes:
+      - ./bot:/app
