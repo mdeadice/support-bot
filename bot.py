@@ -266,6 +266,7 @@ BANNED_USERS_CACHE: set[int] = set()
 FLOOD_CACHE: dict[int, dict] = {}
 ALBUM_CACHE: dict[str, dict] = {}
 PROCESSING_CALLBACKS: set[str] = set()  # Защита от повторных нажатий callback
+PROCESSING_COMMANDS: set[str] = set()  # Защита от повторной обработки команд
 
 # Маппинг сообщений для ответов
 user_to_topic_from_user: dict[int, int] = {}  # user_msg_id -> topic_msg_id (сообщения от пользователя)
@@ -747,41 +748,62 @@ async def cb_send_faq_to_user(call: CallbackQuery):
 async def cmd_ban_user(msg: Message):
     if not msg.message_thread_id: return
     topic_id = msg.message_thread_id
-    user_id = topic_users.get(topic_id)
-    if not user_id:
-        info = await get_ticket_info(topic_id)
-        if info: user_id = info['user_id']
-    if not user_id: return await msg.reply("❌ Не могу найти ID пользователя.")
-
-    args = msg.text.split(maxsplit=1)
-    reason = args[1] if len(args) > 1 else "Нарушение правил"
-
-    await ban_user_db(user_id, reason, msg.from_user.id)
-    BANNED_USERS_CACHE.add(user_id)
     
-    await close_ticket_by_topic_db(topic_id)
+    # Защита от повторной обработки команды
+    command_key = f"ban_{msg.from_user.id}_{msg.message_id}_{topic_id}"
+    if command_key in PROCESSING_COMMANDS:
+        logging.warning(f"Command /ban already processing for {command_key}")
+        return
+    PROCESSING_COMMANDS.add(command_key)
     
-    ban_msg = await get_ban_message_text()
     try:
-        await bot.send_message(user_id, ban_msg)
-        prompt_id = user_states.get(user_id, {}).get("prompt_message_id")
-        if prompt_id:
-            try: await bot.edit_message_reply_markup(chat_id=user_id, message_id=prompt_id, reply_markup=None)
-            except: pass
-    except: pass
-    
-    user_states.pop(user_id, None)
-    user_topics.pop(user_id, None)
-    topic_users.pop(topic_id, None)
+        user_id = topic_users.get(topic_id)
+        if not user_id:
+            info = await get_ticket_info(topic_id)
+            if info: user_id = info['user_id']
+        if not user_id:
+            await msg.reply("❌ Не могу найти ID пользователя.")
+            return
 
-    await msg.reply(f"⛔ Пользователь {user_id} заблокирован.\nПричина: {reason}")
+        # Проверяем, не забанен ли уже пользователь
+        if user_id in BANNED_USERS_CACHE:
+            await msg.reply(f"⚠️ Пользователь {user_id} уже заблокирован.")
+            return
 
-    try:
-        ticket_info = await get_ticket_info(topic_id)
-        if ticket_info:
-            await safe_api_call(bot.edit_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id, name=f"🟢 #ID{ticket_info['id']} — BAN — {user_id}"))
-    except: pass
-    await safe_api_call(bot.close_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id))
+        args = msg.text.split(maxsplit=1)
+        reason = args[1] if len(args) > 1 else "Нарушение правил"
+
+        await ban_user_db(user_id, reason, msg.from_user.id)
+        BANNED_USERS_CACHE.add(user_id)
+        
+        await close_ticket_by_topic_db(topic_id)
+        
+        ban_msg = await get_ban_message_text()
+        try:
+            await bot.send_message(user_id, ban_msg)
+            prompt_id = user_states.get(user_id, {}).get("prompt_message_id")
+            if prompt_id:
+                try: await bot.edit_message_reply_markup(chat_id=user_id, message_id=prompt_id, reply_markup=None)
+                except: pass
+        except Exception as e:
+            logging.error(f"Failed to send ban message to user {user_id}: {e}")
+        
+        user_states.pop(user_id, None)
+        user_topics.pop(user_id, None)
+        topic_users.pop(topic_id, None)
+
+        await msg.reply(f"⛔ Пользователь {user_id} заблокирован.\nПричина: {reason}")
+
+        try:
+            ticket_info = await get_ticket_info(topic_id)
+            if ticket_info:
+                await safe_api_call(bot.edit_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id, name=f"🟢 #ID{ticket_info['id']} — BAN — {user_id}"))
+        except: pass
+        await safe_api_call(bot.close_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id))
+    finally:
+        # Удаляем из кеша через небольшую задержку
+        await asyncio.sleep(1)
+        PROCESSING_COMMANDS.discard(command_key)
 
 @dp.message(Command("unban"), F.chat.id == SUPPORT_CHAT_ID)
 async def cmd_unban_user(msg: Message):
