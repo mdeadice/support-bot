@@ -8,7 +8,7 @@ Telegram бот для организации системы поддержки 
 
 ```powershell
 # Клонируйте репозиторий
-git clone https://github.com/ваш-username/support-bot.git
+git clone https://github.com/mdeadice/support-bot.git
 cd support-bot
 
 # Запустите установщик
@@ -19,7 +19,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 
 ```bash
 # Клонируйте репозиторий
-git clone https://github.com/ваш-username/support-bot.git
+git clone https://github.com/mdeadice/support-bot.git
 cd support-bot
 
 # Запустите установщик
