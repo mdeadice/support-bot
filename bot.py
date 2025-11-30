@@ -411,6 +411,7 @@ async def check_access(msg_or_call) -> bool:
             now = time.time()
             curr_mg = msg_or_call.media_group_id
             FLOOD_CACHE[user_id] = {'time': now, 'mg_id': curr_mg}
+            logging.info(f"Bypassing flood check for user {user_id} - first message in ticket creation")
             return True
         
         now = time.time()
@@ -424,6 +425,13 @@ async def check_access(msg_or_call) -> bool:
             return True
 
         if now - last_time < FLOOD_RATE_LIMIT:
+            # Дополнительная проверка: если пользователь только что начал создавать тикет,
+            # но статус еще не успел установиться (race condition), все равно пропускаем
+            user_state = user_states.get(user_id, {})
+            if user_state.get("status") == "awaiting_problem":
+                logging.info(f"Bypassing flood check for user {user_id} - status check in flood protection")
+                FLOOD_CACHE[user_id] = {'time': now, 'mg_id': curr_mg}
+                return True
             asyncio.create_task(send_autodelete_warning(msg_or_call, f"⏳ Вы пишете слишком часто! Подождите {int(FLOOD_RATE_LIMIT)} сек."))
             return False 
 
@@ -1232,6 +1240,12 @@ async def cb_faq_no_answer(call: CallbackQuery):
         try: 
             await call.message.delete()
         except: pass
+        
+        # ОЧИЩАЕМ FLOOD_CACHE для этого пользователя, чтобы первое сообщение точно прошло
+        # Это гарантирует, что антиспам не заблокирует первое сообщение при создании тикета
+        if user_id in FLOOD_CACHE:
+            del FLOOD_CACHE[user_id]
+            logging.info(f"Cleared flood cache for user {user_id} before ticket creation")
         
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отменить обращение", callback_data="ticket_cancel_creation")]])
         sent = await bot.send_message(call.message.chat.id, "<b>📨 Создаём обращение, пожалуйста, подробно опишите вашу проблему.</b>", reply_markup=kb)
