@@ -23,7 +23,9 @@ from aiogram.types import (
     InputMediaPhoto,
     InputMediaVideo,
     InputMediaDocument,
-    InputMediaAudio
+    InputMediaAudio,
+    BotCommand,
+    BotCommandScopeChat
 )
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 
@@ -60,8 +62,33 @@ async def init_db():
         await db.execute("CREATE TABLE IF NOT EXISTS faq_media (id INTEGER PRIMARY KEY, faq_id INTEGER, file_id TEXT, type TEXT, created_at TEXT, FOREIGN KEY (faq_id) REFERENCES faq(id) ON DELETE CASCADE)")
         await db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
         await db.execute("CREATE TABLE IF NOT EXISTS banned_users (user_id INTEGER PRIMARY KEY, reason TEXT, admin_id INTEGER, banned_at TEXT)")
+        # Таблица для маппинга сообщений (ответы)
+        await db.execute("CREATE TABLE IF NOT EXISTS message_map (topic_message_id INTEGER PRIMARY KEY, user_chat_id INTEGER, user_message_id INTEGER)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_user_msg ON message_map (user_chat_id, user_message_id)")
         await db.commit()
 
+# === ФУНКЦИИ МАППИНГА ===
+async def save_message_pair(topic_msg_id: int, user_chat_id: int, user_msg_id: int):
+    """Сохраняет связь между сообщением в топике и у юзера"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR REPLACE INTO message_map (topic_message_id, user_chat_id, user_message_id) VALUES (?, ?, ?)", (topic_msg_id, user_chat_id, user_msg_id))
+        await db.commit()
+
+async def get_user_message_id(topic_msg_id: int):
+    """По ID сообщения в топике находит ID сообщения у юзера (чтобы оператор мог ответить)"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_message_id FROM message_map WHERE topic_message_id = ?", (topic_msg_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+async def get_topic_message_id(user_chat_id: int, user_msg_id: int):
+    """По ID сообщения юзера находит ID сообщения в топике (чтобы юзер мог ответить)"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT topic_message_id FROM message_map WHERE user_chat_id = ? AND user_message_id = ?", (user_chat_id, user_msg_id)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+# === НАСТРОЙКИ И ЮЗЕРЫ ===
 async def get_setting(key: str) -> str | None:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -74,7 +101,6 @@ async def set_setting(key: str, value: str):
         await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
         await db.commit()
 
-# === БАН СИСТЕМА ===
 async def ban_user_db(user_id: int, reason: str, admin_id: int):
     now = datetime.utcnow().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
@@ -123,6 +149,12 @@ async def get_last_ticket_by_user(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT id, topic_id FROM tickets WHERE user_id=? ORDER BY id DESC LIMIT 1", (user_id,)) as cursor:
+            return await cursor.fetchone()
+
+async def get_open_ticket_by_user(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT id, topic_id FROM tickets WHERE user_id=? AND status='open' ORDER BY id DESC LIMIT 1", (user_id,)) as cursor:
             return await cursor.fetchone()
 
 async def get_active_tickets_db():
@@ -214,14 +246,17 @@ async def reindex_faq_sort():
 user_states: dict[int, dict] = {}
 topic_users: dict[int, int] = {}
 user_topics: dict[int, int] = {}
-user_to_topic_from_operator: dict[int, int] = {}
-topic_to_user_from_operator: dict[int, int] = {}
-user_to_topic_from_user: dict[int, int] = {}
-topic_to_user_from_user: dict[int, int] = {}
 
 BANNED_USERS_CACHE: set[int] = set()
 FLOOD_CACHE: dict[int, dict] = {}
-ALBUM_CACHE: dict[str, dict] = {} # {media_group_id: {messages: [], task: Task}}
+ALBUM_CACHE: dict[str, dict] = {}
+PROCESSING_CALLBACKS: set[str] = set()  # Защита от повторных нажатий callback
+
+# Маппинг сообщений для ответов
+user_to_topic_from_user: dict[int, int] = {}  # user_msg_id -> topic_msg_id (сообщения от пользователя)
+topic_to_user_from_user: dict[int, int] = {}  # topic_msg_id -> user_msg_id (сообщения от пользователя)
+user_to_topic_from_operator: dict[int, int] = {}  # user_msg_id -> topic_msg_id (сообщения от оператора)
+topic_to_user_from_operator: dict[int, int] = {}  # topic_msg_id -> user_msg_id (сообщения от оператора)
 
 # === FSM ===
 class AdminStates(StatesGroup):
@@ -278,6 +313,38 @@ async def send_autodelete_warning(message: Message, text: str):
         await msg.delete()
     except: pass
 
+# === ВАЖНО: ФУНКЦИИ С ПОВТОРОМ (RETRY) ===
+async def safe_api_call(coroutine):
+    retries = 3
+    last_error = None
+    for i in range(retries):
+        try:
+            return await coroutine
+        except TelegramRetryAfter as e:
+            logging.warning(f"FloodWait: sleeping {e.retry_after}s")
+            await asyncio.sleep(e.retry_after + 1)
+            last_error = e
+        except TelegramForbiddenError as e:
+            logging.warning(f"User blocked bot: {e}")
+            raise  # Пробрасываем дальше, чтобы обработать отдельно
+        except Exception as e:
+            logging.error(f"API Error (attempt {i+1}/{retries}): {e}")
+            last_error = e
+            if i < retries - 1:
+                await asyncio.sleep(1)
+    logging.error(f"API call failed after {retries} attempts. Last error: {last_error}")
+    return None
+
+async def copy_message_with_retry(msg: Message, dest_chat_id: int, thread_id: int | None = None, reply_to: int | None = None) -> Message | None:
+    try:
+        return await safe_api_call(msg.copy_to(chat_id=dest_chat_id, message_thread_id=thread_id, reply_to_message_id=reply_to))
+    except TelegramForbiddenError:
+        logging.warning(f"User {dest_chat_id} blocked bot. Cannot copy message.")
+        return None
+    except Exception as e:
+        logging.error(f"Error copying message to {dest_chat_id}: {e}")
+        return None
+
 # === ПРОВЕРКИ ===
 async def check_access(msg_or_call) -> bool:
     user_id = msg_or_call.from_user.id
@@ -318,10 +385,13 @@ async def check_access(msg_or_call) -> bool:
 # === УТИЛИТЫ ===
 async def create_new_topic_for_user(user_id: int, username: str | None) -> int | None:
     try:
-        created = await bot.create_forum_topic(chat_id=SUPPORT_CHAT_ID, name="Временное имя")
+        created = await safe_api_call(bot.create_forum_topic(chat_id=SUPPORT_CHAT_ID, name="Временное имя"))
+        if not created: return None
+        
         topic_id = created.message_thread_id
         ticket_id = await create_ticket(user_id, username, topic_id)
-        await bot.edit_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id, name=f"🔴 #ID{ticket_id} — @{username or 'user'} — {user_id}")
+        await safe_api_call(bot.edit_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id, name=f"🔴 #ID{ticket_id} — @{username or 'user'} — {user_id}"))
+        
         topic_users[topic_id] = user_id
         user_topics[user_id] = topic_id
         return topic_id
@@ -329,126 +399,90 @@ async def create_new_topic_for_user(user_id: int, username: str | None) -> int |
         logging.error(f"Error creating topic: {e}")
         return None
 
-async def copy_message_any_type(msg: Message, dest_chat_id: int, thread_id: int | None = None, reply_to: int | None = None) -> Message | None:
-    try:
-        return await msg.copy_to(chat_id=dest_chat_id, message_thread_id=thread_id, reply_to_message_id=reply_to)
-    except TelegramRetryAfter: raise 
-    except Exception as e:
-        logging.warning(f"Error copying: {e}")
-        return None
-
 # === ОБРАБОТКА АЛЬБОМОВ ===
 async def process_album(media_group_id: str, is_operator: bool, extra_data: dict):
-    await asyncio.sleep(1.0) # Ждем сбора всех частей
-    
+    await asyncio.sleep(1.0)
     if media_group_id not in ALBUM_CACHE: return
     messages = ALBUM_CACHE[media_group_id]['messages']
     del ALBUM_CACHE[media_group_id]
-    
-    # Сортируем по ID (по порядку)
     messages.sort(key=lambda m: m.message_id)
     
-    media_group = []
-    caption_set = False
-    
-    # Конвертируем сообщения в InputMedia
-    for m in messages:
-        caption = m.caption or m.text
-        # Telegram разрешает caption только для первого элемента в send_media_group (обычно) или дублирует
-        # Мы берем первый попавшийся caption
-        if m.photo:
-            media_group.append(InputMediaPhoto(media=m.photo[-1].file_id, caption=caption if not caption_set else None))
-            if caption: caption_set = True
-        elif m.video:
-            media_group.append(InputMediaVideo(media=m.video.file_id, caption=caption if not caption_set else None))
-            if caption: caption_set = True
-        elif m.document:
-            media_group.append(InputMediaDocument(media=m.document.file_id, caption=caption if not caption_set else None))
-            if caption: caption_set = True
-        elif m.audio:
-            media_group.append(InputMediaAudio(media=m.audio.file_id, caption=caption if not caption_set else None))
-            if caption: caption_set = True
+    # РАЗБИВКА НА ПАЧКИ ПО 10 (ЛИМИТ ТГ)
+    chunks = [messages[i:i + 10] for i in range(0, len(messages), 10)]
 
-    if not media_group: return
+    for chunk_idx, chunk in enumerate(chunks):
+        media_group = []
+        caption_set = False
+        for m in chunk:
+            caption = m.caption or m.text
+            if m.photo:
+                media_group.append(InputMediaPhoto(media=m.photo[-1].file_id, caption=caption if not caption_set else None))
+                if caption: caption_set = True
+            elif m.video:
+                media_group.append(InputMediaVideo(media=m.video.file_id, caption=caption if not caption_set else None))
+                if caption: caption_set = True
+            elif m.document:
+                media_group.append(InputMediaDocument(media=m.document.file_id, caption=caption if not caption_set else None))
+                if caption: caption_set = True
+            elif m.audio:
+                media_group.append(InputMediaAudio(media=m.audio.file_id, caption=caption if not caption_set else None))
+                if caption: caption_set = True
+        
+        if not media_group: continue
 
-    # ОТПРАВКА
-    if is_operator:
-        # Оператор -> Пользователь
-        user_id = extra_data.get('user_id')
-        reply_to = extra_data.get('reply_to')
-        if user_id:
-            try: await bot.send_media_group(chat_id=user_id, media=media_group, reply_to_message_id=reply_to)
-            except Exception as e: logging.error(f"Failed to send album to user: {e}")
-    else:
-        # Пользователь -> Оператор
-        user_id = messages[0].from_user.id
-        username = messages[0].from_user.username
-        
-        # 1. Проверяем, нужно ли создать тикет
-        topic_id = user_topics.get(user_id)
-        current_user_state = user_states.get(user_id, {})
-        status = current_user_state.get("status")
-        
-        # Если статус awaiting_problem - создаем тикет прямо сейчас
-        if status == "awaiting_problem":
-            user_states[user_id] = {"status": "processing"}
+        if is_operator:
+            user_id = extra_data.get('user_id')
+            topic_id = extra_data.get('topic_id')
+            reply_to = extra_data.get('reply_to')
             
-            # Убираем промпт
-            prompt_message_id = current_user_state.get("prompt_message_id")
-            if prompt_message_id:
-                try: await bot.edit_message_reply_markup(chat_id=user_id, message_id=prompt_message_id, reply_markup=None)
-                except: pass
+            # Проверка на закрытый тикет для альбома оператора
+            if topic_id:
+                ticket_info = await get_ticket_info(topic_id)
+                if ticket_info and ticket_info['status'] == 'closed':
+                    logging.warning(f"Operator tried to send album to user {user_id} in closed ticket {topic_id}")
+                    # Уведомляем оператора (берем первое сообщение из chunk)
+                    if chunk:
+                        try:
+                            await bot.send_message(SUPPORT_CHAT_ID, "⚠️ Тикет закрыт. Нельзя отправить альбом пользователю.", message_thread_id=topic_id)
+                        except: pass
+                    return
             
-            topic_id = await create_new_topic_for_user(user_id, username)
-            if not topic_id:
-                await bot.send_message(user_id, "❗️ Ошибка создания тикета.")
-                user_states.pop(user_id, None)
+            if user_id:
+                try: 
+                    sent_msgs = await bot.send_media_group(chat_id=user_id, media=media_group, reply_to_message_id=reply_to)
+                    for sent, orig in zip(sent_msgs, chunk):
+                        await save_message_pair(orig.message_id, user_id, sent.message_id)
+                except Exception as e: logging.error(f"Failed to send album to user: {e}")
+        else:
+            user_id = chunk[0].from_user.id
+            username = chunk[0].from_user.username
+            
+            existing_ticket = await get_open_ticket_by_user(user_id)
+            if existing_ticket:
+                topic_id = existing_ticket['topic_id']
+                user_topics[user_id] = topic_id
+                user_states[user_id] = {"status": "active"}
+            else:
+                # ЕСЛИ ТИКЕТА НЕТ - СТРОГОЕ МЕНЮ, АЛЬБОМ НЕ ПРИНИМАЕМ
+                if chunk_idx == 0: # Отвечаем только 1 раз
+                    # await bot.send_message(user_id, "Пожалуйста, воспользуйтесь меню.") # ТЕКСТ УБРАН ПО ПРОСЬБЕ
+                    await show_main_menu(user_id)
                 return
 
-            # Уведомление в админку
-            panel_url = await get_setting('panel_base_url')
-            buttons = []
-            if panel_url: buttons.append(InlineKeyboardButton(text="Профиль", url=panel_url + f"users/{user_id}"))
-            buttons.append(InlineKeyboardButton(text="Закрыть тикет", callback_data=f"admin_close_ticket_{topic_id}"))
-            
-            notice = await bot.send_message(SUPPORT_CHAT_ID, f"🆕 Новое обращение от @{username} (ID: {user_id})", message_thread_id=topic_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]))
-            try: await bot.pin_chat_message(chat_id=SUPPORT_CHAT_ID, message_id=notice.message_id, disable_notification=True)
-            except: pass
-            
-            # Ответ пользователю
-            kb_close = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Закрыть обращение", callback_data="ticket_close")]])
-            sent_info = await bot.send_message(user_id, "<b>✅ Ваше обращение зарегистрировано...</b>", reply_markup=None) # Текст по вашему ТЗ, кнопки отдельно
-            
-            # Кнопку "Закрыть" добавляем к промпту или отдельным сообщением? 
-            # Вы просили оставить как было: меняем старую кнопку "Отменить" на "Закрыть"
-            if prompt_message_id:
-                try: await bot.edit_message_reply_markup(chat_id=user_id, message_id=prompt_message_id, reply_markup=kb_close)
-                except: pass
-            
-            user_states[user_id] = {"status": "active", "prompt_message_id": prompt_message_id}
+            if topic_id:
+                reply_to_topic_msg_id = None
+                if chunk[0].reply_to_message:
+                     reply_to_topic_msg_id = await get_topic_message_id(user_id, chunk[0].reply_to_message.message_id)
 
-        elif not topic_id and status == "active":
-             # Если тикета нет, а статус active (рассинхрон) - лечим
-             user_states.pop(user_id, None)
-             await show_main_menu(user_id)
-             return
-
-        if topic_id:
-            # Отправляем альбом в топик
-            reply_to_topic_msg_id = None
-            # Для альбома Reply сложнее, берем Reply первого сообщения если есть
-            if messages[0].reply_to_message:
-                 reply_to_topic_msg_id = user_to_topic_from_operator.get(messages[0].reply_to_message.message_id)
-                 if not reply_to_topic_msg_id: reply_to_topic_msg_id = user_to_topic_from_user.get(messages[0].reply_to_message.message_id)
-
-            try:
-                sent_msgs = await bot.send_media_group(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id, media=media_group, reply_to_message_id=reply_to_topic_msg_id)
-                # Сохраняем ID для reply (хотя бы первого сообщения из группы)
-                if sent_msgs:
-                    user_to_topic_from_user[messages[0].message_id] = sent_msgs[0].message_id
-                    topic_to_user_from_user[sent_msgs[0].message_id] = messages[0].message_id
-            except Exception as e:
-                logging.error(f"Error sending album to support: {e}")
+                try:
+                    sent_msgs = await bot.send_media_group(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id, media=media_group, reply_to_message_id=reply_to_topic_msg_id)
+                    for sent, orig in zip(sent_msgs, chunk):
+                        await save_message_pair(sent.message_id, user_id, orig.message_id)
+                except Exception as e:
+                    logging.error(f"Error sending album to support: {e}")
+        
+        # Небольшая пауза между пачками
+        await asyncio.sleep(0.5)
 
 # === ГЛАВНОЕ МЕНЮ ===
 async def show_main_menu(chat_id: int):
@@ -466,7 +500,10 @@ async def show_main_menu(chat_id: int):
 async def cmd_start_handler(msg: Message, state: FSMContext):
     if not await check_access(msg): return
     await state.clear()
-    if user_states.get(msg.from_user.id, {}).get("status") == "active":
+    existing_ticket = await get_open_ticket_by_user(msg.from_user.id)
+    if existing_ticket:
+        user_topics[msg.from_user.id] = existing_ticket['topic_id']
+        user_states[msg.from_user.id] = {'status': 'active'}
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Закрыть обращение", callback_data="ticket_close")]])
         await msg.answer("У вас уже есть активное обращение.", reply_markup=kb)
     else:
@@ -504,11 +541,153 @@ async def close_ticket_flow(topic_id: int, closed_by: str = "operator", message_
         user_topics.pop(user_id, None)
 
     if ticket_id:
-        try: await bot.edit_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id, name=f"🟢 #ID{ticket_id} — CLOSED — {user_id}")
-        except: pass
-    try: await bot.close_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id)
-    except: pass
+        await safe_api_call(bot.edit_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id, name=f"🟢 #ID{ticket_id} — CLOSED — {user_id}"))
+    
+    await safe_api_call(bot.close_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id))
+    
     topic_users.pop(topic_id, None)
+
+# === НОВЫЕ КОМАНДЫ ОПЕРАТОРА (МЕНЮ) ===
+
+@dp.message(Command("close"), F.chat.id == SUPPORT_CHAT_ID)
+async def cmd_close_ticket(msg: Message):
+    if not msg.message_thread_id: return
+    
+    # ПРОВЕРКА НА ЗАКРЫТОСТЬ
+    ticket_info = await get_ticket_info(msg.message_thread_id)
+    if ticket_info and ticket_info['status'] == 'closed':
+        return await msg.reply("⚠️ <b>Тикет уже закрыт.</b>")
+        
+    await close_ticket_flow(msg.message_thread_id, "admin")
+
+@dp.message(Command("check"), F.chat.id == SUPPORT_CHAT_ID)
+async def cmd_check_user(msg: Message):
+    if not msg.message_thread_id: return
+    topic_id = msg.message_thread_id
+    user_id = topic_users.get(topic_id)
+    if not user_id:
+        info = await get_ticket_info(topic_id)
+        user_id = info['user_id'] if info else None
+    
+    if not user_id: return await msg.reply("❌ Не могу найти пользователя.")
+
+    # ИЩЕМ ИСТОРИЮ
+    ticket_info = await get_ticket_info(topic_id)
+    if ticket_info and ticket_info['status'] == 'closed':
+        return await msg.reply("⚠️ <b>Тикет закрыт.</b>\n\nНельзя выполнить действие или отправить сообщение.\nДля управления пользователем используйте команды:\n• <code>/ban</code> — заблокировать\n• <code>/unban</code> — разблокировать")
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Закрыть обращение", callback_data="ticket_close")]])
+    try:
+        await bot.send_message(user_id, "<b>Скажите, могу ли я еще чем-то помочь?</b>\nЕсли нет — нажмите кнопку ниже.", reply_markup=kb)
+        await msg.reply("✅ Вопрос отправлен пользователю.")
+    except Exception as e:
+        await msg.reply(f"❌ Ошибка отправки: {e}")
+
+@dp.message(Command("faq"), F.chat.id == SUPPORT_CHAT_ID)
+async def cmd_show_faq_to_op(msg: Message):
+    if not msg.message_thread_id: return
+    topic_id = msg.message_thread_id
+    
+    # Проверка на закрытость перед показом меню
+    ticket_info = await get_ticket_info(topic_id)
+    if ticket_info and ticket_info['status'] == 'closed':
+         return await msg.reply("⚠️ <b>Тикет закрыт.</b>\n\nНельзя выполнить действие или отправить сообщение.\nДля управления пользователем используйте команды:\n• <code>/ban</code> — заблокировать\n• <code>/unban</code> — разблокировать")
+
+    rows = await get_faq_list()
+    if not rows: return await msg.reply("База знаний пуста.")
+    
+    kb_rows = []
+    for row in rows:
+        text = row["question"][:30] + "..."
+        kb_rows.append([InlineKeyboardButton(text=text, callback_data=f"send_faq_{row['id']}")])
+    
+    kb_rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel_faq_menu")])
+    await msg.reply("Выберите ответ из базы:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
+
+@dp.callback_query(F.data == "admin_cancel_faq_menu")
+async def cb_admin_cancel_faq_menu(call: CallbackQuery):
+    await call.message.delete()
+
+# === УТИЛИТА ДЛЯ ОТПРАВКИ FAQ ===
+async def send_faq_message(chat_id: int, faq_text: str, media: list | None, thread_id: int | None = None, header: str = "") -> Message | None:
+    """Отправляет FAQ сообщение с медиа или без"""
+    text = header + faq_text if header else faq_text
+    try:
+        if media:
+            file_id = media[0]['file_id']
+            m_type = media[0]['type']
+            if m_type == "photo":
+                return await bot.send_photo(chat_id, file_id, caption=text, message_thread_id=thread_id)
+            elif m_type == "video":
+                return await bot.send_video(chat_id, file_id, caption=text, message_thread_id=thread_id)
+            elif m_type == "document":
+                return await bot.send_document(chat_id, file_id, caption=text, message_thread_id=thread_id)
+        else:
+            return await bot.send_message(chat_id, text, message_thread_id=thread_id, link_preview_options=LinkPreviewOptions(is_disabled=True))
+    except Exception as e:
+        logging.error(f"Failed to send FAQ message to {chat_id}: {e}")
+        return None
+
+@dp.callback_query(F.data.startswith("send_faq_"), F.message.chat.id == SUPPORT_CHAT_ID)
+async def cb_send_faq_to_user(call: CallbackQuery):
+    # Защита от повторных нажатий
+    callback_key = f"{call.from_user.id}_{call.data}_{call.message.message_id}"
+    if callback_key in PROCESSING_CALLBACKS:
+        return await call.answer("⏳ Обработка...", show_alert=False)
+    
+    PROCESSING_CALLBACKS.add(callback_key)
+    
+    try:
+        faq_id = int(call.data.replace("send_faq_", ""))
+        topic_id = call.message.message_thread_id
+        
+        ticket_info = await get_ticket_info(topic_id)
+        if ticket_info and ticket_info['status'] == 'closed':
+            await call.answer("⚠️ Тикет закрыт. Нельзя выполнить действие или отправить сообщение.", show_alert=True)
+            return
+
+        user_id = topic_users.get(topic_id)
+        if not user_id: 
+            user_id = ticket_info['user_id'] if ticket_info else None
+        
+        if not user_id:
+            await call.answer("Пользователь не найден", show_alert=True)
+            return
+
+        faq, media = await get_faq_item(faq_id)
+        if not faq:
+            await call.answer("Ошибка: вопрос не найден", show_alert=True)
+            return
+
+        text = f"<b>{faq['question']}</b>\n\n{faq['answer']}"
+        
+        # Отправляем пользователю
+        sent_msg = await send_faq_message(user_id, text, media)
+        if not sent_msg:
+            await call.answer("❌ Ошибка отправки пользователю", show_alert=True)
+            return
+        
+        # Удаляем сообщение с кнопками
+        try:
+            await call.message.delete()
+        except: pass
+        
+        # Отправляем в топик для истории
+        header = "🤖 <b>Отправлено из FAQ:</b>\n"
+        topic_msg = await send_faq_message(SUPPORT_CHAT_ID, text, media, thread_id=topic_id, header=header)
+
+        if topic_msg and sent_msg:
+            await save_message_pair(topic_msg.message_id, user_id, sent_msg.message_id)
+        
+        await call.answer("✅ Отправлено", show_alert=False)
+        
+    except Exception as e:
+        logging.error(f"Error in cb_send_faq_to_user: {e}")
+        await call.answer(f"Ошибка: {e}", show_alert=True)
+    finally:
+        # Удаляем из кеша через небольшую задержку
+        await asyncio.sleep(1)
+        PROCESSING_CALLBACKS.discard(callback_key)
 
 # === КОМАНДЫ БАНА ===
 @dp.message(Command("ban"), F.chat.id == SUPPORT_CHAT_ID)
@@ -547,38 +726,62 @@ async def cmd_ban_user(msg: Message):
     try:
         ticket_info = await get_ticket_info(topic_id)
         if ticket_info:
-            await bot.edit_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id, name=f"🟢 #ID{ticket_info['id']} — BAN — {user_id}")
+            await safe_api_call(bot.edit_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id, name=f"🟢 #ID{ticket_info['id']} — BAN — {user_id}"))
     except: pass
-    try: await bot.close_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id)
-    except: pass
+    await safe_api_call(bot.close_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id))
 
 @dp.message(Command("unban"), F.chat.id == SUPPORT_CHAT_ID)
 async def cmd_unban_user(msg: Message):
+    # 1. Пытаемся получить ID из аргументов
     args = msg.text.split(maxsplit=1)
-    if len(args) < 2: return await msg.reply("❌ Используйте: /unban ID")
-    try: target_id = int(args[1])
-    except ValueError: return await msg.reply("❌ ID должен быть числом.")
+    target_id = None
+
+    if len(args) > 1:
+        # Если ввели ID руками (/unban 123)
+        try:
+            target_id = int(args[1])
+        except ValueError:
+            return await msg.reply("❌ ID должен быть числом.")
+    else:
+        # 2. Если ID не ввели, берем из ТОПИКА
+        if msg.message_thread_id:
+            topic_id = msg.message_thread_id
+            # Ищем в памяти
+            target_id = topic_users.get(topic_id)
+            # Если нет в памяти, ищем в БД по тикету
+            if not target_id:
+                info = await get_ticket_info(topic_id)
+                if info: target_id = info['user_id']
+
+    if not target_id:
+        return await msg.reply("❌ Не удалось определить пользователя. Используйте: /unban ID")
+
+    # УБРАЛИ ПРОВЕРКУ "if target_id not in BANNED_USERS_CACHE"
+    # Теперь разбаниваем принудительно, даже если бота перезагружали или кеш сбился.
 
     await unban_user_db(target_id)
     if target_id in BANNED_USERS_CACHE: BANNED_USERS_CACHE.remove(target_id)
     
-    try: await bot.send_message(target_id, "✅ Вы были разблокированы администратором.")
+    try: 
+        await bot.send_message(target_id, "✅ Вы были разблокированы администратором.")
+        await show_main_menu(target_id)
     except: pass
     
     await msg.reply(f"✅ Пользователь {target_id} разблокирован.")
     
+    # Переименовываем последний топик
     last_ticket = await get_last_ticket_by_user(target_id)
     if last_ticket:
         topic_id = last_ticket['topic_id']
         try:
-            await bot.edit_forum_topic(
+            await safe_api_call(bot.edit_forum_topic(
                 chat_id=SUPPORT_CHAT_ID, 
                 message_thread_id=topic_id, 
                 name=f"🟢 #ID{last_ticket['id']} — CLOSED — {target_id}"
-            )
-            await bot.reopen_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id)
-            await asyncio.sleep(0.2)
-            await bot.close_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id)
+            ))
+            await safe_api_call(bot.reopen_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id))
+            await asyncio.sleep(0.5)
+            await safe_api_call(bot.close_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id))
         except: pass
 
 # === АДМИНКА ===
@@ -840,13 +1043,41 @@ async def cb_ticket_close(call: CallbackQuery):
 @dp.callback_query(F.data == "faq_no_answer")
 async def cb_faq_no_answer(call: CallbackQuery):
     if not await check_access(call): return
-    user_id = call.from_user.id
-    try: await call.message.delete()
-    except: pass
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отменить обращение", callback_data="ticket_cancel_creation")]])
-    sent = await bot.send_message(call.message.chat.id, "<b>📨 Создаём обращение, пожалуйста, подробно опишите вашу проблему.</b>", reply_markup=kb)
-    user_states[user_id] = {"status": "awaiting_problem", "prompt_message_id": sent.message_id}
-    await call.answer()
+    
+    # Защита от быстрых повторных нажатий
+    callback_key = f"faq_no_answer_{call.from_user.id}"
+    if callback_key in PROCESSING_CALLBACKS:
+        return await call.answer("⏳ Обработка...", show_alert=False)
+    
+    PROCESSING_CALLBACKS.add(callback_key)
+    
+    try:
+        user_id = call.from_user.id
+        
+        # Проверяем, нет ли уже активного тикета
+        existing_ticket = await get_open_ticket_by_user(user_id)
+        if existing_ticket:
+            await call.answer("У вас уже есть активное обращение.", show_alert=True)
+            return
+        
+        # Проверяем, не находится ли уже в процессе создания
+        current_state = user_states.get(user_id, {})
+        if current_state.get("status") in ("awaiting_problem", "processing"):
+            await call.answer("Обращение уже создается, подождите...", show_alert=True)
+            return
+        
+        try: 
+            await call.message.delete()
+        except: pass
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отменить обращение", callback_data="ticket_cancel_creation")]])
+        sent = await bot.send_message(call.message.chat.id, "<b>📨 Создаём обращение, пожалуйста, подробно опишите вашу проблему.</b>", reply_markup=kb)
+        user_states[user_id] = {"status": "awaiting_problem", "prompt_message_id": sent.message_id}
+        await call.answer()
+    finally:
+        # Удаляем из кеша через небольшую задержку
+        await asyncio.sleep(0.5)
+        PROCESSING_CALLBACKS.discard(callback_key)
     
 @dp.callback_query(F.data == "ticket_cancel_creation")
 async def cb_ticket_cancel_creation(call: CallbackQuery):
@@ -858,58 +1089,120 @@ async def cb_ticket_cancel_creation(call: CallbackQuery):
 
 @dp.message(F.chat.type == "private", StateFilter(None))
 async def handle_user(msg: Message):
-    if not await check_access(msg): return # Антиспам
+    if not await check_access(msg): return # Антиспам проверка
     
     # ПРОВЕРКА НА АЛЬБОМ
     if msg.media_group_id:
         if msg.media_group_id not in ALBUM_CACHE:
             ALBUM_CACHE[msg.media_group_id] = {'messages': [], 'task': None}
-            # Запускаем отложенную обработку
             task = asyncio.create_task(process_album(msg.media_group_id, is_operator=False, extra_data={}))
             ALBUM_CACHE[msg.media_group_id]['task'] = task
-        
         ALBUM_CACHE[msg.media_group_id]['messages'].append(msg)
-        return # Выходим, обрабатывать будем в process_album
+        return
 
-    # ДАЛЬШЕ СТАРАЯ ЛОГИКА ДЛЯ ОДИНОЧНЫХ СООБЩЕНИЙ
+    # ОДИНОЧНОЕ СООБЩЕНИЕ
     user_id = msg.from_user.id
     current_user_state = user_states.get(user_id, {})
     status = current_user_state.get("status")
 
+    # SELF-HEALING: Если бот думает, что тикет открыт, а в БД он закрыт
     if status == "active":
         topic_id = user_topics.get(user_id)
         if topic_id:
             ticket_info = await get_ticket_info(topic_id)
             if ticket_info and ticket_info['status'] == 'closed':
+                # Исправляем ошибку состояния
                 user_states.pop(user_id, None)
                 user_topics.pop(user_id, None)
-                status = None
+                status = None # Считаем, что статуса нет, идем к главному меню
 
-    if not status: return await show_main_menu(msg.chat.id)
+    # --- ИЗМЕНЕНИЕ ТУТ: ЕСЛИ НЕТ СТАТУСА, НО ПРИШЕЛ ТЕКСТ ---
+    if not status: 
+        # Сначала проверяем, не завис ли юзер (может он думает что тикет есть)
+        existing_ticket = await get_open_ticket_by_user(user_id)
+        if existing_ticket:
+            # Восстанавливаем
+            user_topics[user_id] = existing_ticket['topic_id']
+            user_states[user_id] = {'status': 'active'}
+            status = 'active'
+        else:
+            # Если сообщения - это команда, показываем меню и выходим
+            if msg.text and msg.text.startswith("/"):
+                return await show_main_menu(msg.chat.id)
+            
+            # Если просто текст - НЕ СОЗДАЕМ ТИКЕТ, А ШЛЕМ МЕНЮ
+            # await bot.send_message(user_id, "Для обращения в поддержку воспользуйтесь меню.")
+            return await show_main_menu(msg.chat.id)
 
     if status == "active":
         topic_id = user_topics.get(user_id)
-        if not topic_id:
-            user_states.pop(user_id, None)
-            return await msg.answer("Ошибка, создайте новое обращение.")
-        
         reply_to_topic_msg_id = None
         if msg.reply_to_message:
-            reply_to_topic_msg_id = user_to_topic_from_operator.get(msg.reply_to_message.message_id)
-            if not reply_to_topic_msg_id: reply_to_topic_msg_id = user_to_topic_from_user.get(msg.reply_to_message.message_id)
+            # Когда пользователь отвечает на сообщение, msg.reply_to_message.message_id - это ID сообщения у пользователя
+            # Нужно найти соответствующий ID в топике
+            user_reply_msg_id = msg.reply_to_message.message_id
+            
+            # Сначала проверяем память - ищем сообщения от оператора (которые пришли пользователю)
+            reply_to_topic_msg_id = user_to_topic_from_operator.get(user_reply_msg_id)
+            # Если не нашли, проверяем сообщения от пользователя (если он отвечает на свое же сообщение)
+            if not reply_to_topic_msg_id: 
+                reply_to_topic_msg_id = user_to_topic_from_user.get(user_reply_msg_id)
+            # Если не нашли в памяти, проверяем БД
+            if not reply_to_topic_msg_id:
+                reply_to_topic_msg_id = await get_topic_message_id(user_id, user_reply_msg_id)
 
-        sent = await copy_message_any_type(msg, dest_chat_id=SUPPORT_CHAT_ID, thread_id=topic_id, reply_to=reply_to_topic_msg_id)
+        sent = await copy_message_with_retry(msg, dest_chat_id=SUPPORT_CHAT_ID, thread_id=topic_id, reply_to=reply_to_topic_msg_id)
         if sent:
+            # Сохраняем маппинг в память и БД
             user_to_topic_from_user[msg.message_id] = sent.message_id
             topic_to_user_from_user[sent.message_id] = msg.message_id
-        else: await msg.answer("⚠️ Не удалось отправить сообщение поддержке.")
+            await save_message_pair(sent.message_id, user_id, msg.message_id)
+        else: 
+            try:
+                await msg.answer("⚠️ Не удалось отправить сообщение поддержке. Возможно, тип файла не поддерживается.")
+            except Exception as e:
+                logging.error(f"Failed to send error message to user {user_id}: {e}")
         
     elif status == "processing": return
+    
+    # --- БЛОК АВТОМАТИЧЕСКОГО СОЗДАНИЯ ТИКЕТА (работает и для альбомов через process_album) ---
+    if status == "awaiting_problem":
+        # Защита от race condition - проверяем, не начал ли уже другой обработчик создавать тикет
+        if user_id in user_states and user_states[user_id].get("status") == "processing":
+            # Уже обрабатывается, ждем немного и проверяем снова
+            await asyncio.sleep(0.5)
+            existing_ticket = await get_open_ticket_by_user(user_id)
+            if existing_ticket:
+                topic_id = existing_ticket['topic_id']
+                user_topics[user_id] = topic_id
+                user_states[user_id] = {"status": "active"}
+                # Шлем сообщение в существующий тикет
+                sent = await copy_message_with_retry(msg, dest_chat_id=SUPPORT_CHAT_ID, thread_id=topic_id)
+                if sent:
+                    user_to_topic_from_user[msg.message_id] = sent.message_id
+                    topic_to_user_from_user[sent.message_id] = msg.message_id
+                    await save_message_pair(sent.message_id, user_id, msg.message_id)
+                return
+            # Если тикет все еще не создан, продолжаем создание
         
-    elif status == "awaiting_problem":
         user_states[user_id] = {"status": "processing"}
         username = msg.from_user.username
         
+        # На всякий случай еще раз чекнем БД (вдруг гонка)
+        existing_ticket = await get_open_ticket_by_user(user_id)
+        if existing_ticket:
+            topic_id = existing_ticket['topic_id']
+            user_topics[user_id] = topic_id
+            user_states[user_id] = {"status": "active"}
+            # Шлем сообщение в старый тикет
+            sent = await copy_message_with_retry(msg, dest_chat_id=SUPPORT_CHAT_ID, thread_id=topic_id)
+            if sent:
+                # Сохраняем маппинг в память и БД
+                user_to_topic_from_user[msg.message_id] = sent.message_id
+                topic_to_user_from_user[sent.message_id] = msg.message_id
+                await save_message_pair(sent.message_id, user_id, msg.message_id)
+            return
+
         topic_id = await create_new_topic_for_user(user_id, username)
         if not topic_id:
             user_states.pop(user_id, None)
@@ -920,14 +1213,17 @@ async def handle_user(msg: Message):
         if panel_url: buttons.append(InlineKeyboardButton(text="Просмотреть пользователя", url=panel_url + f"users/{user_id}"))
         buttons.append(InlineKeyboardButton(text="Закрыть тикет", callback_data=f"admin_close_ticket_{topic_id}"))
         
-        notice = await bot.send_message(SUPPORT_CHAT_ID, f"🆕 Новое обращение от @{username} (ID: {user_id})", message_thread_id=topic_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons]))
-        try: await bot.pin_chat_message(chat_id=SUPPORT_CHAT_ID, message_id=notice.message_id, disable_notification=True)
-        except: pass
+        notice = await safe_api_call(bot.send_message(SUPPORT_CHAT_ID, f"🆕 Новое обращение от @{username} (ID: {user_id})", message_thread_id=topic_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons])))
+        if notice:
+            try: await bot.pin_chat_message(chat_id=SUPPORT_CHAT_ID, message_id=notice.message_id, disable_notification=True)
+            except: pass
         
-        sent = await copy_message_any_type(msg, dest_chat_id=SUPPORT_CHAT_ID, thread_id=topic_id)
+        sent = await copy_message_with_retry(msg, dest_chat_id=SUPPORT_CHAT_ID, thread_id=topic_id)
         if sent:
+            # Сохраняем маппинг в память и БД
             user_to_topic_from_user[msg.message_id] = sent.message_id
             topic_to_user_from_user[sent.message_id] = msg.message_id
+            await save_message_pair(sent.message_id, user_id, msg.message_id)
         
         kb_close = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Закрыть обращение", callback_data="ticket_close")]])
         prompt_message_id = current_user_state.get("prompt_message_id")
@@ -935,7 +1231,22 @@ async def handle_user(msg: Message):
             try: await bot.edit_message_reply_markup(chat_id=user_id, message_id=prompt_message_id, reply_markup=kb_close)
             except: pass
             
-        await msg.answer("<b>✅ Ваше обращение зарегистрировано, пожалуйста, дождитесь ответа оператора.\nЧтобы дополнить обращение — пришлите следующее сообщение.</b>")
+        # Отправляем подтверждение пользователю с обработкой ошибок
+        try:
+            await msg.answer("<b>✅ Ваше обращение зарегистрировано, пожалуйста, дождитесь ответа оператора.\nЧтобы дополнить обращение — пришлите следующее сообщение.</b>")
+        except TelegramForbiddenError:
+            logging.warning(f"User {user_id} blocked bot. Cannot send ticket confirmation.")
+            # Уведомляем оператора, что пользователь заблокировал бота
+            try:
+                await bot.send_message(SUPPORT_CHAT_ID, f"⚠️ Пользователь {user_id} (@{username}) заблокировал бота. Сообщения не доставляются.", message_thread_id=topic_id)
+            except: pass
+        except Exception as e:
+            logging.error(f"Failed to send ticket confirmation to user {user_id}: {e}")
+            # Пытаемся уведомить оператора об ошибке
+            try:
+                await bot.send_message(SUPPORT_CHAT_ID, f"⚠️ Ошибка отправки подтверждения пользователю {user_id}: {e}", message_thread_id=topic_id)
+            except: pass
+        
         user_states[user_id] = {"status": "active", "prompt_message_id": prompt_message_id}
 
 @dp.callback_query(F.data.startswith("admin_close_ticket_"))
@@ -967,41 +1278,78 @@ async def handle_operator(msg: Message):
     topic_id = msg.message_thread_id
     if msg.text and msg.text.startswith("/"): return
 
+    # Получаем информацию о тикете один раз
+    ticket_info = await get_ticket_info(topic_id)
+    
+    # ПРОВЕРКА НА ЗАКРЫТЫЙ ТИКЕТ В НАЧАЛЕ
+    if ticket_info and ticket_info['status'] == 'closed':
+        return await msg.reply("⚠️ <b>Тикет закрыт.</b>\n\nНельзя отправить сообщение пользователю.\nДля управления пользователем используйте команды:\n• <code>/ban</code> — заблокировать\n• <code>/unban</code> — разблокировать")
+
+    # Получаем user_id из кеша или из ticket_info
     user_id = topic_users.get(topic_id)
     if not user_id:
-         info = await get_ticket_info(topic_id)
-         if info and info['status'] == 'closed':
-             return await msg.reply("⚠️ Тикет закрыт. Сообщение не доставлено.")
-         user_id = info['user_id'] if info else None
+        user_id = ticket_info['user_id'] if ticket_info else None
     
     if not user_id: return
     
     reply_to_user_msg_id = None
     if msg.reply_to_message:
         reply_id = msg.reply_to_message.message_id
+        # Сначала проверяем память
         reply_to_user_msg_id = topic_to_user_from_user.get(reply_id)
-        if not reply_to_user_msg_id: reply_to_user_msg_id = topic_to_user_from_operator.get(reply_id)
+        if not reply_to_user_msg_id:
+            reply_to_user_msg_id = topic_to_user_from_operator.get(reply_id)
+        # Если не нашли в памяти, проверяем БД
+        if not reply_to_user_msg_id:
+            reply_to_user_msg_id = await get_user_message_id(reply_id)
 
-    # ПРОВЕРКА НА АЛЬБОМ ОПЕРАТОРА
+    # АЛЬБОМ ОПЕРАТОРА
     if msg.media_group_id:
         if msg.media_group_id not in ALBUM_CACHE:
             ALBUM_CACHE[msg.media_group_id] = {'messages': [], 'task': None}
-            # Передаем user_id и reply_to
-            task = asyncio.create_task(process_album(msg.media_group_id, is_operator=True, extra_data={'user_id': user_id, 'reply_to': reply_to_user_msg_id}))
+            task = asyncio.create_task(process_album(msg.media_group_id, is_operator=True, extra_data={'user_id': user_id, 'topic_id': topic_id, 'reply_to': reply_to_user_msg_id}))
             ALBUM_CACHE[msg.media_group_id]['task'] = task
-        
         ALBUM_CACHE[msg.media_group_id]['messages'].append(msg)
         return
 
-    sent = await copy_message_any_type(msg, dest_chat_id=user_id, reply_to=reply_to_user_msg_id)
+    sent = await copy_message_with_retry(msg, dest_chat_id=user_id, reply_to=reply_to_user_msg_id)
     if sent:
+        # Сохраняем маппинг в память и БД
         user_to_topic_from_operator[sent.message_id] = msg.message_id
         topic_to_user_from_operator[msg.message_id] = sent.message_id
+        await save_message_pair(msg.message_id, user_id, sent.message_id)
     else:
-        try: await msg.reply("⚠️ Не удалось отправить сообщение пользователю.")
+        # Детальное логирование ошибки
+        error_reason = "Неизвестная ошибка при копировании сообщения"
+        try:
+            # Пробуем получить информацию о чате для диагностики
+            chat_info = await bot.get_chat(user_id)
+            error_reason = "Ошибка при копировании сообщения"
+        except TelegramForbiddenError:
+            error_reason = f"Пользователь {user_id} заблокировал бота"
+            logging.warning(f"User {user_id} blocked bot. Cannot send operator message.")
+        except Exception as e:
+            error_reason = f"Ошибка: {e}"
+            logging.error(f"Failed to send operator message to user {user_id}: {e}")
+        
+        try: 
+            await msg.reply(f"⚠️ Не удалось отправить сообщение пользователю {user_id}.\nПричина: {error_reason}")
         except: pass
 
 async def on_startup():
+    # Инициализация команд для операторов (в группе поддержки)
+    commands = [
+        BotCommand(command="ban", description="⛔ Бан пользователя"),
+        BotCommand(command="unban", description="✅ Разбан пользователя"),
+        BotCommand(command="close", description="🔒 Закрыть тикет"),
+        BotCommand(command="check", description="❓ Спросить 'Могу помочь?'"),
+        BotCommand(command="faq", description="📄 Отправить ответ из FAQ")
+    ]
+    try:
+        await bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=SUPPORT_CHAT_ID))
+    except Exception as e:
+        logging.warning(f"Не удалось установить команды меню: {e}")
+
     await init_db()
     await reindex_faq_sort()
     banned = await get_banned_list_db()
