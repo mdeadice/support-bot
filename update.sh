@@ -59,7 +59,16 @@ if [ -f "bot/bot.db" ]; then
     echo -e "${GREEN}Создание резервной копии базы данных...${NC}"
     cp bot/bot.db "bot/bot.db.backup.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
     echo -e "${GREEN}Резервная копия создана!${NC}"
+else
+    # Создаем файл БД, если его нет
+    echo -e "${YELLOW}Создание файла базы данных...${NC}"
+    touch bot/bot.db 2>/dev/null || true
+    chmod 666 bot/bot.db 2>/dev/null || true
 fi
+
+# Убеждаемся, что директория bot существует и имеет правильные права
+mkdir -p bot
+chmod 755 bot 2>/dev/null || true
 
 echo -e "${GREEN}Скачивание обновленных файлов...${NC}"
 

@@ -52,20 +52,33 @@ dp = Dispatcher(storage=MemoryStorage())
 # === БАЗА ДАННЫХ ===
 
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("CREATE TABLE IF NOT EXISTS tickets (id INTEGER PRIMARY KEY, user_id INTEGER, username TEXT, topic_id INTEGER, status TEXT, created_at TEXT, closed_at TEXT)")
-        await db.execute("CREATE TABLE IF NOT EXISTS faq (id INTEGER PRIMARY KEY, question TEXT, answer TEXT, created_at TEXT, updated_at TEXT)")
-        try: await db.execute("ALTER TABLE faq ADD COLUMN parse_mode TEXT DEFAULT 'HTML'")
-        except Exception: pass
-        try: await db.execute("ALTER TABLE faq ADD COLUMN sort_order INTEGER DEFAULT 0")
-        except Exception: pass
-        await db.execute("CREATE TABLE IF NOT EXISTS faq_media (id INTEGER PRIMARY KEY, faq_id INTEGER, file_id TEXT, type TEXT, created_at TEXT, FOREIGN KEY (faq_id) REFERENCES faq(id) ON DELETE CASCADE)")
-        await db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
-        await db.execute("CREATE TABLE IF NOT EXISTS banned_users (user_id INTEGER PRIMARY KEY, reason TEXT, admin_id INTEGER, banned_at TEXT)")
-        # Таблица для маппинга сообщений (ответы)
-        await db.execute("CREATE TABLE IF NOT EXISTS message_map (topic_message_id INTEGER PRIMARY KEY, user_chat_id INTEGER, user_message_id INTEGER)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_user_msg ON message_map (user_chat_id, user_message_id)")
-        await db.commit()
+    # Создаем директорию для БД, если её нет
+    db_dir = os.path.dirname(DB_PATH) if os.path.dirname(DB_PATH) else "."
+    if db_dir and db_dir != "." and not os.path.exists(db_dir):
+        try:
+            os.makedirs(db_dir, exist_ok=True)
+        except Exception as e:
+            logging.error(f"Failed to create DB directory {db_dir}: {e}")
+    
+    # Проверяем, что можем создать/открыть БД
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("CREATE TABLE IF NOT EXISTS tickets (id INTEGER PRIMARY KEY, user_id INTEGER, username TEXT, topic_id INTEGER, status TEXT, created_at TEXT, closed_at TEXT)")
+            await db.execute("CREATE TABLE IF NOT EXISTS faq (id INTEGER PRIMARY KEY, question TEXT, answer TEXT, created_at TEXT, updated_at TEXT)")
+            try: await db.execute("ALTER TABLE faq ADD COLUMN parse_mode TEXT DEFAULT 'HTML'")
+            except Exception: pass
+            try: await db.execute("ALTER TABLE faq ADD COLUMN sort_order INTEGER DEFAULT 0")
+            except Exception: pass
+            await db.execute("CREATE TABLE IF NOT EXISTS faq_media (id INTEGER PRIMARY KEY, faq_id INTEGER, file_id TEXT, type TEXT, created_at TEXT, FOREIGN KEY (faq_id) REFERENCES faq(id) ON DELETE CASCADE)")
+            await db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+            await db.execute("CREATE TABLE IF NOT EXISTS banned_users (user_id INTEGER PRIMARY KEY, reason TEXT, admin_id INTEGER, banned_at TEXT)")
+            # Таблица для маппинга сообщений (ответы)
+            await db.execute("CREATE TABLE IF NOT EXISTS message_map (topic_message_id INTEGER PRIMARY KEY, user_chat_id INTEGER, user_message_id INTEGER)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_user_msg ON message_map (user_chat_id, user_message_id)")
+            await db.commit()
+    except Exception as e:
+        logging.error(f"Failed to initialize database at {DB_PATH}: {e}")
+        raise
 
 # === ФУНКЦИИ МАППИНГА ===
 async def save_message_pair(topic_msg_id: int, user_chat_id: int, user_msg_id: int):
