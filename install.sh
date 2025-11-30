@@ -26,13 +26,52 @@ fi
 BOT_DIR="support-bot"
 if [ -d "$BOT_DIR" ]; then
     echo -e "${YELLOW}Директория $BOT_DIR уже существует.${NC}"
-    read -p "Перезаписать? (y/n): " -n 1 -r
+    
+    # Проверка наличия базы данных
+    DB_BACKUP=""
+    if [ -f "$BOT_DIR/bot/bot.db" ]; then
+        echo -e "${YELLOW}⚠️  Обнаружена база данных!${NC}"
+        DB_BACKUP="${BOT_DIR}/bot/bot.db.backup.$(date +%Y%m%d_%H%M%S)"
+        echo -e "${GREEN}Создание резервной копии БД: $DB_BACKUP${NC}"
+        cp "$BOT_DIR/bot/bot.db" "$DB_BACKUP"
+        echo -e "${GREEN}Резервная копия создана!${NC}"
+    fi
+    
+    read -p "Перезаписать файлы? (БД будет сохранена) (y/n): " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         echo "Отмена установки."
         exit 1
     fi
+    
+    # Сохраняем важные файлы
+    BACKUP_DIR="${BOT_DIR}_backup_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$BACKUP_DIR"
+    
+    # Копируем базу данных и .env если есть
+    if [ -f "$BOT_DIR/bot/bot.db" ]; then
+        cp "$BOT_DIR/bot/bot.db" "$BACKUP_DIR/bot.db" 2>/dev/null || true
+    fi
+    if [ -f "$BOT_DIR/.env" ]; then
+        cp "$BOT_DIR/.env" "$BACKUP_DIR/.env" 2>/dev/null || true
+    fi
+    
+    # Удаляем директорию
     rm -rf "$BOT_DIR"
+    
+    # Восстанавливаем важные файлы
+    mkdir -p "$BOT_DIR/bot"
+    if [ -f "$BACKUP_DIR/bot.db" ]; then
+        cp "$BACKUP_DIR/bot.db" "$BOT_DIR/bot/bot.db"
+        echo -e "${GREEN}База данных восстановлена!${NC}"
+    fi
+    if [ -f "$BACKUP_DIR/.env" ]; then
+        cp "$BACKUP_DIR/.env" "$BOT_DIR/.env"
+        echo -e "${GREEN}Файл .env восстановлен!${NC}"
+    fi
+    
+    # Удаляем временную резервную копию
+    rm -rf "$BACKUP_DIR"
 fi
 
 mkdir -p "$BOT_DIR"

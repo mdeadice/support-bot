@@ -30,6 +30,13 @@ fi
 echo -e "${YELLOW}Остановка бота...${NC}"
 docker-compose down 2>/dev/null || docker compose down 2>/dev/null
 
+# Защита базы данных - создаем резервную копию перед обновлением
+if [ -f "bot/bot.db" ]; then
+    echo -e "${GREEN}Создание резервной копии базы данных...${NC}"
+    cp bot/bot.db "bot/bot.db.backup.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+    echo -e "${GREEN}Резервная копия создана!${NC}"
+fi
+
 echo -e "${GREEN}Скачивание обновленных файлов...${NC}"
 
 # Создание структуры папок если её нет
