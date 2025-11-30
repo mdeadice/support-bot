@@ -71,7 +71,15 @@ if [ -f "bot/bot.db" ]; then
         BACKUP_FILE="bot/bot.db.backup.$(date +%Y%m%d_%H%M%S)"
         cp bot/bot.db "$BACKUP_FILE" 2>/dev/null || true
         if [ -f "$BACKUP_FILE" ]; then
-            echo -e "${GREEN}Резервная копия создана: $BACKUP_FILE${NC}"
+            BACKUP_SIZE=$(stat -f%z "$BACKUP_FILE" 2>/dev/null || stat -c%s "$BACKUP_FILE" 2>/dev/null || echo "0")
+            if [ "$BACKUP_SIZE" -gt 0 ]; then
+                echo -e "${GREEN}Резервная копия создана: $BACKUP_FILE (размер: ${BACKUP_SIZE} байт)${NC}"
+            else
+                echo -e "${RED}ОШИБКА: Резервная копия создана, но пуста!${NC}"
+                echo -e "${YELLOW}Обновление прервано для защиты данных.${NC}"
+                rm -f "$BACKUP_FILE" 2>/dev/null || true
+                exit 1
+            fi
         else
             echo -e "${RED}ОШИБКА: Не удалось создать резервную копию!${NC}"
             echo -e "${YELLOW}Обновление прервано для защиты данных.${NC}"
@@ -89,6 +97,25 @@ fi
 # Убеждаемся, что директория bot существует и имеет правильные права
 mkdir -p bot
 chmod 755 bot 2>/dev/null || true
+
+# Проверка и исправление DB_PATH в .env файле
+if [ -f ".env" ]; then
+    echo -e "${YELLOW}Проверка DB_PATH в .env...${NC}"
+    if grep -q "DB_PATH=" .env; then
+        # Проверяем, что путь правильный (должен быть /app/bot.db для контейнера)
+        if ! grep -q "DB_PATH=/app/bot.db" .env; then
+            echo -e "${YELLOW}Исправление DB_PATH в .env...${NC}"
+            # Заменяем любую строку DB_PATH на правильную
+            sed -i.bak 's|^DB_PATH=.*|DB_PATH=/app/bot.db|' .env 2>/dev/null || \
+            sed -i 's|^DB_PATH=.*|DB_PATH=/app/bot.db|' .env 2>/dev/null || true
+            echo -e "${GREEN}DB_PATH исправлен на /app/bot.db${NC}"
+        fi
+    else
+        echo -e "${YELLOW}Добавление DB_PATH в .env...${NC}"
+        echo "DB_PATH=/app/bot.db" >> .env
+        echo -e "${GREEN}DB_PATH добавлен в .env${NC}"
+    fi
+fi
 
 echo -e "${GREEN}Скачивание обновленных файлов...${NC}"
 
@@ -168,9 +195,31 @@ BACKUP_COUNT=$(ls -1 bot/bot.db.backup.* 2>/dev/null | wc -l)
 if [ "$BACKUP_COUNT" -gt 0 ]; then
     echo -e "${YELLOW}Доступные резервные копии БД:${NC}"
     ls -lh bot/bot.db.backup.* 2>/dev/null | tail -5
+    
+    # Проверяем, есть ли непустые резервные копии
+    NON_EMPTY_BACKUPS=$(find bot -name "bot.db.backup.*" -size +0 2>/dev/null | wc -l)
+    if [ "$NON_EMPTY_BACKUPS" -eq 0 ]; then
+        echo -e "${RED}ВНИМАНИЕ: Все резервные копии пустые (0 байт)!${NC}"
+        echo -e "${YELLOW}Это означает, что БД была пустой или резервное копирование не сработало.${NC}"
+    fi
+    
     echo -e "${YELLOW}Для восстановления БД из резервной копии:${NC}"
     echo -e "  ${GREEN}cp bot/bot.db.backup.YYYYMMDD_HHMMSS bot/bot.db${NC}"
+    echo -e "  ${GREEN}chmod 666 bot/bot.db${NC}"
     echo ""
+fi
+
+# Проверка текущей БД
+if [ -f "bot/bot.db" ]; then
+    CURRENT_DB_SIZE=$(stat -f%z "bot/bot.db" 2>/dev/null || stat -c%s "bot/bot.db" 2>/dev/null || echo "0")
+    if [ "$CURRENT_DB_SIZE" -eq 0 ]; then
+        echo -e "${RED}ВНИМАНИЕ: Текущая БД пуста (0 байт)!${NC}"
+        echo -e "${YELLOW}Если у вас была БД с данными, проверьте резервные копии выше.${NC}"
+    else
+        echo -e "${GREEN}Текущая БД существует (размер: ${CURRENT_DB_SIZE} байт)${NC}"
+    fi
+else
+    echo -e "${YELLOW}Текущая БД не найдена. Будет создана новая при первом запуске.${NC}"
 fi
 
 echo -e "Просмотр логов: ${GREEN}cd $BOT_DIR && docker-compose logs -f${NC}\n"
