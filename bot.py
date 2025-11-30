@@ -1163,8 +1163,33 @@ async def cb_faq_back_to_menu(call: CallbackQuery):
 @dp.callback_query(F.data == "ticket_close")
 async def cb_ticket_close(call: CallbackQuery):
     if not await check_access(call): return
-    topic_id = user_topics.get(call.from_user.id)
-    if not topic_id: return await call.answer("Не найдено активных обращений.", show_alert=True)
+    user_id = call.from_user.id
+    
+    # Сначала проверяем память
+    topic_id = user_topics.get(user_id)
+    
+    # Если не нашли в памяти, проверяем БД
+    if not topic_id:
+        existing_ticket = await get_open_ticket_by_user(user_id)
+        if existing_ticket:
+            topic_id = existing_ticket['topic_id']
+            # Восстанавливаем состояние
+            user_topics[user_id] = topic_id
+            topic_users[topic_id] = user_id
+            user_states[user_id] = {'status': 'active'}
+            logging.info(f"Restored ticket state for user {user_id}, topic {topic_id}")
+        else:
+            return await call.answer("Не найдено активных обращений.", show_alert=True)
+    
+    # Проверяем, что тикет действительно открыт
+    ticket_info = await get_ticket_info(topic_id)
+    if not ticket_info or ticket_info['status'] == 'closed':
+        # Очищаем состояние
+        user_states.pop(user_id, None)
+        user_topics.pop(user_id, None)
+        topic_users.pop(topic_id, None)
+        return await call.answer("Обращение уже закрыто.", show_alert=True)
+    
     await close_ticket_flow(topic_id, "user", call.message)
 
 @dp.callback_query(F.data == "faq_no_answer")
