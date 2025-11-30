@@ -402,6 +402,17 @@ async def check_access(msg_or_call) -> bool:
     if isinstance(msg_or_call, CallbackQuery): return True
 
     if isinstance(msg_or_call, Message):
+        # Пропускаем антиспам для первого сообщения при создании тикета
+        # Это важно, чтобы первое сообщение всегда регистрировалось
+        user_state = user_states.get(user_id, {})
+        if user_state.get("status") == "awaiting_problem":
+            # Это первое сообщение при создании тикета - пропускаем проверку антиспама
+            # Но все равно обновляем время в кеше, чтобы следующее сообщение проверялось
+            now = time.time()
+            curr_mg = msg_or_call.media_group_id
+            FLOOD_CACHE[user_id] = {'time': now, 'mg_id': curr_mg}
+            return True
+        
         now = time.time()
         user_flood = FLOOD_CACHE.get(user_id, {})
         last_time = user_flood.get('time', 0)
