@@ -7,7 +7,7 @@ Telegram бот для поддержки пользователей с сист
 ### Автоматическая установка (одна команда):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/install.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/mdeadice/support-bot/main/install.sh | sudo bash
 ```
 
 После установки:
@@ -91,7 +91,7 @@ ADMIN_IDS=123456789,987654321,555666777
 ### Автоматическое обновление (одна команда):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/update.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/mdeadice/support-bot/main/update.sh | sudo bash
 ```
 
 **Важно:** База данных автоматически сохраняется перед обновлением. Старая БД не удаляется.

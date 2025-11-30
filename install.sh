@@ -55,16 +55,16 @@ echo -e "${GREEN}Скачивание файлов с GitHub...${NC}"
 
 # Скачивание файлов
 echo -e "Скачивание bot.py..."
-curl -sL -o bot/bot.py https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/bot.py || curl -sL -o bot/bot.py https://raw.githubusercontent.com/mdeadice/support-bot/main/bot.py
+curl -sL -o bot/bot.py https://raw.githubusercontent.com/mdeadice/support-bot/main/bot.py || curl -sL -o bot/bot.py https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/bot.py
 
 echo -e "Скачивание docker-compose.yml..."
-curl -s -o docker-compose.yml https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/docker-compose.yml || curl -s -o docker-compose.yml https://raw.githubusercontent.com/mdeadice/support-bot/main/docker-compose.yml
+curl -s -o docker-compose.yml https://raw.githubusercontent.com/mdeadice/support-bot/main/docker-compose.yml || curl -s -o docker-compose.yml https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/docker-compose.yml
 
 echo -e "Скачивание requirements.txt..."
-curl -s -o requirements.txt https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/requirements.txt || curl -s -o requirements.txt https://raw.githubusercontent.com/mdeadice/support-bot/main/requirements.txt
+curl -s -o requirements.txt https://raw.githubusercontent.com/mdeadice/support-bot/main/requirements.txt || curl -s -o requirements.txt https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/requirements.txt
 
 echo -e "Скачивание Dockerfile..."
-curl -s -o Dockerfile https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/Dockerfile || curl -s -o Dockerfile https://raw.githubusercontent.com/mdeadice/support-bot/main/Dockerfile
+curl -s -o Dockerfile https://raw.githubusercontent.com/mdeadice/support-bot/main/Dockerfile || curl -s -o Dockerfile https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/Dockerfile
 
 # Проверка успешности скачивания
 if [ ! -f "bot/bot.py" ] || [ ! -f "docker-compose.yml" ] || [ ! -f "requirements.txt" ] || [ ! -f "Dockerfile" ]; then
@@ -104,4 +104,4 @@ echo "1. Отредактируйте файл .env: ${GREEN}nano $BOT_DIR/.env$
 echo "2. Запустите бота: ${GREEN}cd $BOT_DIR && docker-compose up -d${NC}"
 echo "3. Просмотр логов: ${GREEN}cd $BOT_DIR && docker-compose logs -f${NC}\n"
 echo -e "${YELLOW}Для обновления используйте:${NC}"
-echo "  ${GREEN}curl -sSL https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/update.sh | bash${NC}\n"
+echo "  ${GREEN}curl -sSL https://raw.githubusercontent.com/mdeadice/support-bot/main/update.sh | sudo bash${NC}\n"
