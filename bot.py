@@ -549,6 +549,22 @@ async def close_ticket_flow(topic_id: int, closed_by: str = "operator", message_
 
 # === НОВЫЕ КОМАНДЫ ОПЕРАТОРА (МЕНЮ) ===
 
+# Временная команда для получения Chat ID (можно удалить после настройки)
+@dp.message(Command("get_chat_id"))
+async def cmd_get_chat_id(msg: Message):
+    chat_id = msg.chat.id
+    chat_title = msg.chat.title or "Личный чат"
+    chat_type = msg.chat.type
+    
+    response = (
+        f"📋 <b>Информация о чате:</b>\n\n"
+        f"Название: {chat_title}\n"
+        f"Chat ID: <code>{chat_id}</code>\n"
+        f"Тип: {chat_type}\n\n"
+        f"<i>Скопируйте Chat ID в файл .env</i>"
+    )
+    await msg.reply(response)
+
 @dp.message(Command("close"), F.chat.id == SUPPORT_CHAT_ID)
 async def cmd_close_ticket(msg: Message):
     if not msg.message_thread_id: return

@@ -41,7 +41,10 @@ nano .env
 
 **В файле .env укажите:**
 - `BOT_TOKEN` - получите у @BotFather
-- `SUPPORT_CHAT_ID` - ID вашей Forum группы (узнайте через @userinfobot)
+- `SUPPORT_CHAT_ID` - ID вашей Forum группы:
+  - Добавьте вашего бота в группу и отправьте `/get_chat_id`
+  - Или используйте [@getidsbot](https://t.me/getidsbot) / [@RawDataBot](https://t.me/RawDataBot)
+  - ID будет отрицательным числом (например: `-1001234567890`)
 - `ADMIN_IDS` - ваш Telegram ID (через запятую, если несколько)
 
 **Пример:**

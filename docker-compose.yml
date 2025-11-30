@@ -10,4 +10,4 @@ services:
     environment:
       PYTHONUNBUFFERED: 1
     volumes:
-      - ./bot/bot.db:/app/bot.db
+      - ./bot:/app

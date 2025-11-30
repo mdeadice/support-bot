@@ -131,6 +131,13 @@ if ! grep -q "env_file:" docker-compose.yml; then
     fi
 fi
 
+# Создание пустого файла базы данных, если его нет
+if [ ! -f "bot/bot.db" ]; then
+    echo -e "${YELLOW}Создание файла базы данных...${NC}"
+    touch bot/bot.db
+    echo -e "${GREEN}Файл базы данных создан!${NC}\n"
+fi
+
 echo -e "${GREEN}=== Установка завершена! ===${NC}\n"
 echo -e "${YELLOW}Следующие шаги:${NC}"
 echo "1. Отредактируйте файл .env и укажите ваши данные"

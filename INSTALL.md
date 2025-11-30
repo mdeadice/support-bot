@@ -110,9 +110,10 @@ vi .env
    - Скопируйте токен
 
 2. **SUPPORT_CHAT_ID** - ID вашей группы поддержки (Forum группа):
-   - Добавьте бота [@userinfobot](https://t.me/userinfobot) в группу
-   - Напишите в группе `/start`
-   - Скопируйте Chat ID (будет отрицательное число, например: `-1001234567890`)
+   - **Самый простой способ:** Добавьте вашего бота в группу и отправьте команду `/get_chat_id`
+   - Бот покажет Chat ID (будет отрицательное число, например: `-1001234567890`)
+   - **Альтернатива:** Используйте [@getidsbot](https://t.me/getidsbot) или [@RawDataBot](https://t.me/RawDataBot)
+   - Подробнее: см. [HOW_TO_GET_CHAT_ID.md](HOW_TO_GET_CHAT_ID.md)
 
 3. **ADMIN_IDS** - ID администраторов через запятую:
    - Узнайте свой ID через [@userinfobot](https://t.me/userinfobot)
