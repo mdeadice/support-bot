@@ -193,16 +193,10 @@ async def get_active_tickets_db():
 
 # === FAQ DB ===
 async def get_faq_list():
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT id, question, sort_order FROM faq ORDER BY sort_order ASC, id ASC") as cursor:
-                rows = await cursor.fetchall()
-                logging.info(f"Loaded {len(rows)} FAQ items from database")
-                return rows
-    except Exception as e:
-        logging.error(f"Error loading FAQ list: {e}, DB_PATH: {DB_PATH}")
-        return []
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT id, question, sort_order FROM faq ORDER BY sort_order ASC, id ASC") as cursor:
+            return await cursor.fetchall()
 
 async def get_faq_item(faq_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -714,9 +708,7 @@ async def cmd_show_faq_to_op(msg: Message):
          return await msg.reply("⚠️ <b>Тикет закрыт.</b>\n\nНельзя выполнить действие или отправить сообщение.\nДля управления пользователем используйте команды:\n• <code>/ban</code> — заблокировать\n• <code>/unban</code> — разблокировать")
 
     rows = await get_faq_list()
-    if not rows:
-        logging.warning(f"FAQ list is empty for topic {topic_id}, DB_PATH: {DB_PATH}")
-        return await msg.reply("База знаний пуста.")
+    if not rows: return await msg.reply("База знаний пуста.")
     
     kb_rows = []
     for row in rows:
@@ -1565,28 +1557,6 @@ async def handle_operator(msg: Message):
         except: pass
 
 async def on_startup():
-    # Логирование информации о БД
-    logging.info(f"DB_PATH: {DB_PATH}")
-    logging.info(f"DB file exists: {os.path.exists(DB_PATH)}")
-    if os.path.exists(DB_PATH):
-        db_size = os.path.getsize(DB_PATH)
-        logging.info(f"DB file size: {db_size} bytes")
-    
-    # Проверка содержимого БД до инициализации
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            # Проверяем, есть ли таблица faq и сколько в ней записей
-            async with db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='faq'") as cursor:
-                faq_table_exists = await cursor.fetchone() is not None
-            if faq_table_exists:
-                async with db.execute("SELECT COUNT(*) as count FROM faq") as cursor:
-                    row = await cursor.fetchone()
-                    faq_count_before = row['count'] if row else 0
-                    logging.info(f"FAQ records in DB before init: {faq_count_before}")
-    except Exception as e:
-        logging.warning(f"Could not check DB contents before init: {e}")
-    
     # Инициализация команд для операторов (в группе поддержки)
     commands = [
         BotCommand(command="ban", description="⛔ Бан пользователя"),
@@ -1597,37 +1567,11 @@ async def on_startup():
     ]
     try:
         await bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=SUPPORT_CHAT_ID))
-        logging.info("Команды для операторов установлены")
     except Exception as e:
         logging.warning(f"Не удалось установить команды меню: {e}")
 
     await init_db()
     await reindex_faq_sort()
-    
-    # Проверка FAQ после инициализации
-    faq_count = len(await get_faq_list())
-    logging.info(f"Загружено FAQ из БД: {faq_count}")
-    
-    # Дополнительная диагностика: проверяем содержимое БД напрямую
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT COUNT(*) as count FROM faq") as cursor:
-                row = await cursor.fetchone()
-                direct_faq_count = row['count'] if row else 0
-                logging.info(f"Прямой запрос к БД: FAQ записей = {direct_faq_count}")
-            # Показываем первые 3 FAQ для диагностики
-            async with db.execute("SELECT id, question FROM faq LIMIT 3") as cursor:
-                rows = await cursor.fetchall()
-                if rows:
-                    logging.info(f"Примеры FAQ в БД:")
-                    for row in rows:
-                        logging.info(f"  - ID {row['id']}: {row['question'][:50]}...")
-                else:
-                    logging.warning("БД не содержит FAQ записей!")
-    except Exception as e:
-        logging.error(f"Ошибка при проверке содержимого БД: {e}")
-    
     banned = await get_banned_list_db()
     BANNED_USERS_CACHE.update(banned)
     if banned:
@@ -1638,7 +1582,7 @@ async def on_startup():
         user_states[uid] = {'status': 'active'}
         user_topics[uid] = tid
         topic_users[tid] = uid
-    logging.info(f"Бот запущен. Банов: {len(BANNED_USERS_CACHE)}, FAQ: {faq_count}, Активных тикетов: {len(rows)}")
+    logging.info(f"Бот запущен. Банов: {len(BANNED_USERS_CACHE)}")
 
 async def main():
     dp.startup.register(on_startup)
