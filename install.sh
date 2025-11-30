@@ -87,7 +87,7 @@ mkdir -p bot
 echo "✓ Директории созданы"
 
 # Опция настройки systemd (только для Linux)
-if [ -f "/etc/systemd/system" ] || [ -d "/etc/systemd" ]; then
+if [ -d "/etc/systemd" ]; then
     echo ""
     read -p "Настроить автозапуск через systemd? (y/N): " setup_systemd
     if [ "$setup_systemd" = "y" ] || [ "$setup_systemd" = "Y" ]; then
