@@ -111,6 +111,9 @@ async def unban_user_db(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM banned_users WHERE user_id=?", (user_id,))
         await db.commit()
+    # Принудительно удаляем из кеша
+    BANNED_USERS_CACHE.discard(user_id)
+    logging.info(f"User {user_id} unbanned. Removed from cache. Cache size: {len(BANNED_USERS_CACHE)}")
 
 async def get_banned_list_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -348,8 +351,21 @@ async def copy_message_with_retry(msg: Message, dest_chat_id: int, thread_id: in
 # === ПРОВЕРКИ ===
 async def check_access(msg_or_call) -> bool:
     user_id = msg_or_call.from_user.id
+    
+    # Проверяем кеш
     if user_id in BANNED_USERS_CACHE:
-        logging.info(f"User {user_id} is in BANNED_USERS_CACHE. Total banned: {len(BANNED_USERS_CACHE)}")
+        # Дополнительная проверка в БД на случай рассинхронизации
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT user_id FROM banned_users WHERE user_id = ?", (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    # Пользователь не в БД, но в кеше - исправляем
+                    logging.warning(f"User {user_id} was in cache but not in DB. Removing from cache.")
+                    BANNED_USERS_CACHE.discard(user_id)
+                    return True  # Разрешаем доступ
+        
+        # Пользователь действительно забанен
+        logging.info(f"User {user_id} is banned (in cache and DB). Total banned: {len(BANNED_USERS_CACHE)}")
         ban_text = await get_ban_message_text()
         try:
             if isinstance(msg_or_call, Message): await msg_or_call.answer(ban_text)
@@ -776,15 +792,29 @@ async def cmd_unban_user(msg: Message):
     # УБРАЛИ ПРОВЕРКУ "if target_id not in BANNED_USERS_CACHE"
     # Теперь разбаниваем принудительно, даже если бота перезагружали или кеш сбился.
 
+    # Разбаниваем (функция уже удаляет из кеша)
     await unban_user_db(target_id)
-    if target_id in BANNED_USERS_CACHE: BANNED_USERS_CACHE.remove(target_id)
+    
+    # Дополнительная проверка - убеждаемся что удалено из кеша
+    if target_id in BANNED_USERS_CACHE:
+        BANNED_USERS_CACHE.remove(target_id)
+        logging.warning(f"User {target_id} was still in cache after unban. Force removed.")
+    
+    # Проверяем что действительно разбанен
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id FROM banned_users WHERE user_id = ?", (target_id,)) as cursor:
+            still_banned = await cursor.fetchone()
+            if still_banned:
+                logging.error(f"User {target_id} still in DB after unban! Attempting to remove again.")
+                await unban_user_db(target_id)
     
     try: 
         await bot.send_message(target_id, "✅ Вы были разблокированы администратором.")
         await show_main_menu(target_id)
-    except: pass
+    except Exception as e:
+        logging.error(f"Failed to send unban message to {target_id}: {e}")
     
-    await msg.reply(f"✅ Пользователь {target_id} разблокирован.")
+    await msg.reply(f"✅ Пользователь {target_id} разблокирован.\nКеш обновлен. Пользователь может использовать бота.")
     
     # Переименовываем последний топик
     last_ticket = await get_last_ticket_by_user(target_id)
