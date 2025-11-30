@@ -16,7 +16,18 @@
 ssh user@your-server-ip
 ```
 
-### Шаг 2: Установка Docker (если не установлен)
+### Шаг 2: Проверка Docker (если уже установлен)
+
+Если Docker уже установлен, просто проверьте:
+
+```bash
+docker --version
+docker-compose --version
+```
+
+Если команды работают, переходите к шагу 3.
+
+### Шаг 2 (альтернативный): Установка Docker (если не установлен)
 
 #### Для Ubuntu/Debian:
 
@@ -231,6 +242,17 @@ sudo usermod -aG docker $USER
 newgrp docker
 ```
 
+### Docker уже установлен
+
+Если Docker уже установлен (как в вашем случае), просто проверьте версию и продолжайте:
+
+```bash
+docker --version
+docker-compose --version
+```
+
+Если команды работают, переходите к установке бота.
+
 ## Автозапуск при перезагрузке сервера
 
 Docker Compose уже настроен на автозапуск (`restart: unless-stopped`), но если нужно убедиться:
@@ -253,4 +275,3 @@ docker-compose up -d
 
 - Полная документация: см. [README.md](README.md)
 - Проблемы? Создайте Issue на GitHub
-

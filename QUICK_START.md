@@ -2,7 +2,16 @@
 
 ## Скопируйте и выполните команды по порядку:
 
-### 1. Установка Docker (если не установлен)
+### 1. Проверка Docker (если уже установлен)
+
+```bash
+docker --version
+docker-compose --version
+```
+
+**Если команды работают - переходите к шагу 2!**
+
+### 1 (альтернативный): Установка Docker (если не установлен)
 
 ```bash
 curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh
@@ -10,7 +19,7 @@ sudo usermod -aG docker $USER
 newgrp docker
 ```
 
-### 2. Установка docker-compose
+### 2. Установка docker-compose (если не установлен)
 
 ```bash
 sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
@@ -80,4 +89,3 @@ curl -sSL https://raw.githubusercontent.com/mdeadice/support-bot/main/update.sh 
 ## ❓ Полная инструкция
 
 См. [INSTALL.md](INSTALL.md) для подробной инструкции и решения проблем.
-
