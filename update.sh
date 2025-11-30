@@ -38,10 +38,17 @@ fi
 # Переход в директорию
 cd "$BOT_DIR" || exit 1
 
-# Остановка бота, если он запущен
+# Остановка и удаление старого контейнера и образа
 if [ -f "docker-compose.yml" ]; then
-    echo -e "${YELLOW}Остановка бота...${NC}"
-    docker-compose down 2>/dev/null || docker compose down 2>/dev/null
+    echo -e "${YELLOW}Остановка и удаление старого контейнера...${NC}"
+    docker-compose down --remove-orphans 2>/dev/null || docker compose down --remove-orphans 2>/dev/null
+    
+    # Удаляем старый образ, чтобы гарантировать пересборку
+    echo -e "${YELLOW}Удаление старого образа...${NC}"
+    docker rmi support-bot-support-bot:latest 2>/dev/null || docker rmi $(docker-compose images -q) 2>/dev/null || true
+    
+    # Очистка неиспользуемых образов
+    docker image prune -f 2>/dev/null || true
 fi
 
 # Защита базы данных - создаем резервную копию перед обновлением
@@ -78,11 +85,37 @@ fi
 echo -e "${GREEN}Файлы успешно обновлены!${NC}\n"
 
 # Пересборка и запуск
-echo -e "${YELLOW}Пересборка контейнера...${NC}"
-docker-compose build --no-cache 2>/dev/null || docker compose build --no-cache 2>/dev/null
+echo -e "${YELLOW}Пересборка контейнера (это может занять время)...${NC}"
+if command -v docker-compose &> /dev/null; then
+    docker-compose build --no-cache --pull
+    echo -e "${YELLOW}Запуск бота...${NC}"
+    docker-compose up -d
+else
+    docker compose build --no-cache --pull
+    echo -e "${YELLOW}Запуск бота...${NC}"
+    docker compose up -d
+fi
 
-echo -e "${YELLOW}Запуск бота...${NC}"
-docker-compose up -d 2>/dev/null || docker compose up -d 2>/dev/null
+# Принудительный перезапуск для применения изменений
+echo -e "${YELLOW}Перезапуск контейнера для применения изменений...${NC}"
+if command -v docker-compose &> /dev/null; then
+    docker-compose restart
+else
+    docker compose restart
+fi
+
+# Проверка статуса
+sleep 3
+echo -e "\n${YELLOW}Проверка статуса контейнера...${NC}"
+if command -v docker-compose &> /dev/null; then
+    docker-compose ps
+    echo -e "\n${GREEN}Проверка логов (последние 20 строк):${NC}"
+    docker-compose logs --tail=20
+else
+    docker compose ps
+    echo -e "\n${GREEN}Проверка логов (последние 20 строк):${NC}"
+    docker compose logs --tail=20
+fi
 
 echo -e "${GREEN}=== Обновление завершено! ===${NC}\n"
 echo -e "Просмотр логов: ${GREEN}cd $BOT_DIR && docker-compose logs -f${NC}\n"
