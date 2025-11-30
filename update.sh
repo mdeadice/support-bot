@@ -64,14 +64,26 @@ fi
 
 # Защита базы данных - создаем резервную копию перед обновлением
 if [ -f "bot/bot.db" ]; then
-    echo -e "${GREEN}Создание резервной копии базы данных...${NC}"
-    cp bot/bot.db "bot/bot.db.backup.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
-    echo -e "${GREEN}Резервная копия создана!${NC}"
+    DB_SIZE=$(stat -f%z "bot/bot.db" 2>/dev/null || stat -c%s "bot/bot.db" 2>/dev/null || echo "0")
+    if [ "$DB_SIZE" -gt 0 ]; then
+        echo -e "${GREEN}Обнаружена база данных (размер: ${DB_SIZE} байт)${NC}"
+        echo -e "${GREEN}Создание резервной копии базы данных...${NC}"
+        BACKUP_FILE="bot/bot.db.backup.$(date +%Y%m%d_%H%M%S)"
+        cp bot/bot.db "$BACKUP_FILE" 2>/dev/null || true
+        if [ -f "$BACKUP_FILE" ]; then
+            echo -e "${GREEN}Резервная копия создана: $BACKUP_FILE${NC}"
+        else
+            echo -e "${RED}ОШИБКА: Не удалось создать резервную копию!${NC}"
+            echo -e "${YELLOW}Обновление прервано для защиты данных.${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${YELLOW}Файл БД существует, но пуст.${NC}"
+    fi
 else
-    # Создаем файл БД, если его нет
-    echo -e "${YELLOW}Создание файла базы данных...${NC}"
-    touch bot/bot.db 2>/dev/null || true
-    chmod 666 bot/bot.db 2>/dev/null || true
+    # Создаем файл БД, если его нет (только если БД действительно нет)
+    echo -e "${YELLOW}База данных не найдена. Будет создана новая.${NC}"
+    # НЕ создаем файл здесь - пусть бот создаст его при первом запуске
 fi
 
 # Убеждаемся, что директория bot существует и имеет правильные права
@@ -150,4 +162,15 @@ else
 fi
 
 echo -e "${GREEN}=== Обновление завершено! ===${NC}\n"
+
+# Показываем информацию о резервных копиях
+BACKUP_COUNT=$(ls -1 bot/bot.db.backup.* 2>/dev/null | wc -l)
+if [ "$BACKUP_COUNT" -gt 0 ]; then
+    echo -e "${YELLOW}Доступные резервные копии БД:${NC}"
+    ls -lh bot/bot.db.backup.* 2>/dev/null | tail -5
+    echo -e "${YELLOW}Для восстановления БД из резервной копии:${NC}"
+    echo -e "  ${GREEN}cp bot/bot.db.backup.YYYYMMDD_HHMMSS bot/bot.db${NC}"
+    echo ""
+fi
+
 echo -e "Просмотр логов: ${GREEN}cd $BOT_DIR && docker-compose logs -f${NC}\n"
