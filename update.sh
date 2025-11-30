@@ -43,6 +43,14 @@ if [ -f "docker-compose.yml" ]; then
     echo -e "${YELLOW}Остановка и удаление старого контейнера...${NC}"
     docker-compose down --remove-orphans 2>/dev/null || docker compose down --remove-orphans 2>/dev/null
     
+    # Останавливаем все контейнеры с именем support-bot (на случай если есть дубликаты)
+    echo -e "${YELLOW}Проверка на дубликаты контейнеров...${NC}"
+    docker stop support-bot 2>/dev/null || true
+    docker rm support-bot 2>/dev/null || true
+    # Останавливаем все контейнеры, содержащие support-bot в имени
+    docker ps -a | grep support-bot | awk '{print $1}' | xargs -r docker stop 2>/dev/null || true
+    docker ps -a | grep support-bot | awk '{print $1}' | xargs -r docker rm 2>/dev/null || true
+    
     # Удаляем старый образ, чтобы гарантировать пересборку
     echo -e "${YELLOW}Удаление старого образа...${NC}"
     # Пытаемся удалить образ по разным возможным именам
