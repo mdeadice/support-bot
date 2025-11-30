@@ -34,20 +34,20 @@ if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/
         chmod +x /usr/local/bin/docker-compose
     fi
     echo -e "${GREEN}docker-compose установлен!${NC}\n"
-fi
-
+    fi
+    
 # Создание директории
 echo -e "${GREEN}Создание директории $BOT_DIR...${NC}"
 mkdir -p "$BOT_DIR/bot"
-
+    
 # Сохранение существующей БД и .env если есть
-if [ -f "$BOT_DIR/bot/bot.db" ]; then
+    if [ -f "$BOT_DIR/bot/bot.db" ]; then
     echo -e "${YELLOW}Обнаружена существующая база данных. Она будет сохранена.${NC}"
-fi
-if [ -f "$BOT_DIR/.env" ]; then
+    fi
+    if [ -f "$BOT_DIR/.env" ]; then
     echo -e "${YELLOW}Обнаружен существующий .env файл. Он будет сохранен.${NC}"
-fi
-
+    fi
+    
 # Переход в директорию
 cd "$BOT_DIR" || exit 1
 

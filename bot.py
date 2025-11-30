@@ -193,10 +193,16 @@ async def get_active_tickets_db():
 
 # === FAQ DB ===
 async def get_faq_list():
-    async with aiosqlite.connect(DB_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT id, question, sort_order FROM faq ORDER BY sort_order ASC, id ASC") as cursor:
-            return await cursor.fetchall()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT id, question, sort_order FROM faq ORDER BY sort_order ASC, id ASC") as cursor:
+                rows = await cursor.fetchall()
+                logging.info(f"Loaded {len(rows)} FAQ items from database")
+                return rows
+    except Exception as e:
+        logging.error(f"Error loading FAQ list: {e}, DB_PATH: {DB_PATH}")
+        return []
 
 async def get_faq_item(faq_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -582,11 +588,20 @@ async def cmd_start_handler(msg: Message, state: FSMContext):
 # === ЗАКРЫТИЕ ТИКЕТА ===
 async def close_ticket_flow(topic_id: int, closed_by: str = "operator", message_to_edit: Message | None = None):
     ticket_info = await get_ticket_info(topic_id)
-    if not ticket_info: return
+    if not ticket_info:
+        logging.error(f"close_ticket_flow: Ticket not found for topic {topic_id}")
+        return False
+    
     user_id = topic_users.get(topic_id) or ticket_info['user_id']
     ticket_id = ticket_info['id']
+    
+    logging.info(f"Closing ticket {ticket_id} (topic {topic_id}) for user {user_id} by {closed_by}")
 
-    await close_ticket_by_topic_db(topic_id)
+    try:
+        await close_ticket_by_topic_db(topic_id)
+    except Exception as e:
+        logging.error(f"Failed to close ticket in DB: {e}")
+        return False
 
     if user_id:
         prompt_message_id = user_states.get(user_id, {}).get("prompt_message_id")
@@ -616,6 +631,8 @@ async def close_ticket_flow(topic_id: int, closed_by: str = "operator", message_
     await safe_api_call(bot.close_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id))
     
     topic_users.pop(topic_id, None)
+    logging.info(f"Ticket {ticket_id} closed successfully")
+    return True
 
 # === НОВЫЕ КОМАНДЫ ОПЕРАТОРА (МЕНЮ) ===
 
@@ -637,18 +654,33 @@ async def cmd_get_chat_id(msg: Message):
 
 @dp.message(Command("close"), F.chat.id == SUPPORT_CHAT_ID)
 async def cmd_close_ticket(msg: Message):
-    if not msg.message_thread_id: return
+    if not msg.message_thread_id:
+        logging.warning(f"Command /close called without message_thread_id in chat {msg.chat.id}")
+        return await msg.reply("⚠️ <b>Команда должна быть использована в топике тикета.</b>")
+    
+    topic_id = msg.message_thread_id
+    logging.info(f"Command /close called for topic {topic_id} by user {msg.from_user.id}")
     
     # ПРОВЕРКА НА ЗАКРЫТОСТЬ
-    ticket_info = await get_ticket_info(msg.message_thread_id)
-    if ticket_info and ticket_info['status'] == 'closed':
+    ticket_info = await get_ticket_info(topic_id)
+    if not ticket_info:
+        logging.warning(f"Ticket not found for topic {topic_id}")
+        return await msg.reply("⚠️ <b>Тикет не найден в базе данных.</b>")
+    
+    if ticket_info['status'] == 'closed':
         return await msg.reply("⚠️ <b>Тикет уже закрыт.</b>")
-        
-    await close_ticket_flow(msg.message_thread_id, "admin")
+    
+    result = await close_ticket_flow(topic_id, "admin")
+    if result:
+        await msg.reply("✅ <b>Тикет успешно закрыт.</b>")
+    else:
+        await msg.reply("❌ <b>Не удалось закрыть тикет.</b> Проверьте логи.")
 
 @dp.message(Command("check"), F.chat.id == SUPPORT_CHAT_ID)
 async def cmd_check_user(msg: Message):
-    if not msg.message_thread_id: return
+    if not msg.message_thread_id:
+        logging.warning(f"Command /check called without message_thread_id in chat {msg.chat.id}")
+        return await msg.reply("⚠️ <b>Команда должна быть использована в топике тикета.</b>")
     topic_id = msg.message_thread_id
     user_id = topic_users.get(topic_id)
     if not user_id:
@@ -671,7 +703,9 @@ async def cmd_check_user(msg: Message):
 
 @dp.message(Command("faq"), F.chat.id == SUPPORT_CHAT_ID)
 async def cmd_show_faq_to_op(msg: Message):
-    if not msg.message_thread_id: return
+    if not msg.message_thread_id:
+        logging.warning(f"Command /faq called without message_thread_id in chat {msg.chat.id}")
+        return await msg.reply("⚠️ <b>Команда должна быть использована в топике тикета.</b>")
     topic_id = msg.message_thread_id
     
     # Проверка на закрытость перед показом меню
@@ -680,7 +714,9 @@ async def cmd_show_faq_to_op(msg: Message):
          return await msg.reply("⚠️ <b>Тикет закрыт.</b>\n\nНельзя выполнить действие или отправить сообщение.\nДля управления пользователем используйте команды:\n• <code>/ban</code> — заблокировать\n• <code>/unban</code> — разблокировать")
 
     rows = await get_faq_list()
-    if not rows: return await msg.reply("База знаний пуста.")
+    if not rows:
+        logging.warning(f"FAQ list is empty for topic {topic_id}, DB_PATH: {DB_PATH}")
+        return await msg.reply("База знаний пуста.")
     
     kb_rows = []
     for row in rows:
@@ -778,7 +814,9 @@ async def cb_send_faq_to_user(call: CallbackQuery):
 # === КОМАНДЫ БАНА ===
 @dp.message(Command("ban"), F.chat.id == SUPPORT_CHAT_ID)
 async def cmd_ban_user(msg: Message):
-    if not msg.message_thread_id: return
+    if not msg.message_thread_id:
+        logging.warning(f"Command /ban called without message_thread_id in chat {msg.chat.id}")
+        return await msg.reply("⚠️ <b>Команда должна быть использована в топике тикета или укажите ID пользователя: /ban USER_ID [причина]</b>")
     topic_id = msg.message_thread_id
     
     # Защита от повторной обработки команды
@@ -1527,6 +1565,13 @@ async def handle_operator(msg: Message):
         except: pass
 
 async def on_startup():
+    # Логирование информации о БД
+    logging.info(f"DB_PATH: {DB_PATH}")
+    logging.info(f"DB file exists: {os.path.exists(DB_PATH)}")
+    if os.path.exists(DB_PATH):
+        db_size = os.path.getsize(DB_PATH)
+        logging.info(f"DB file size: {db_size} bytes")
+    
     # Инициализация команд для операторов (в группе поддержки)
     commands = [
         BotCommand(command="ban", description="⛔ Бан пользователя"),
@@ -1537,11 +1582,17 @@ async def on_startup():
     ]
     try:
         await bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=SUPPORT_CHAT_ID))
+        logging.info("Команды для операторов установлены")
     except Exception as e:
         logging.warning(f"Не удалось установить команды меню: {e}")
 
     await init_db()
     await reindex_faq_sort()
+    
+    # Проверка FAQ после инициализации
+    faq_count = len(await get_faq_list())
+    logging.info(f"Загружено FAQ из БД: {faq_count}")
+    
     banned = await get_banned_list_db()
     BANNED_USERS_CACHE.update(banned)
     if banned:
@@ -1552,7 +1603,7 @@ async def on_startup():
         user_states[uid] = {'status': 'active'}
         user_topics[uid] = tid
         topic_users[tid] = uid
-    logging.info(f"Бот запущен. Банов: {len(BANNED_USERS_CACHE)}")
+    logging.info(f"Бот запущен. Банов: {len(BANNED_USERS_CACHE)}, FAQ: {faq_count}, Активных тикетов: {len(rows)}")
 
 async def main():
     dp.startup.register(on_startup)
