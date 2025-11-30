@@ -86,6 +86,36 @@ echo "[5/5] Создание директорий..."
 mkdir -p bot
 echo "✓ Директории созданы"
 
+# Опция настройки systemd (только для Linux)
+if [ -f "/etc/systemd/system" ] || [ -d "/etc/systemd" ]; then
+    echo ""
+    read -p "Настроить автозапуск через systemd? (y/N): " setup_systemd
+    if [ "$setup_systemd" = "y" ] || [ "$setup_systemd" = "Y" ]; then
+        CURRENT_DIR=$(pwd)
+        SERVICE_FILE="support-bot.service"
+        
+        if [ -f "$SERVICE_FILE" ]; then
+            # Копируем service файл
+            sudo cp "$SERVICE_FILE" /etc/systemd/system/
+            
+            # Обновляем пути в service файле
+            sudo sed -i "s|WorkingDirectory=.*|WorkingDirectory=$CURRENT_DIR|g" /etc/systemd/system/support-bot.service
+            sudo sed -i "s|ExecStart=.*|ExecStart=$(which $PYTHON_CMD) $CURRENT_DIR/bot.py|g" /etc/systemd/system/support-bot.service
+            
+            # Перезагружаем systemd
+            sudo systemctl daemon-reload
+            sudo systemctl enable support-bot
+            
+            echo "✓ Systemd service настроен"
+            echo "  Запуск: sudo systemctl start support-bot"
+            echo "  Статус: sudo systemctl status support-bot"
+            echo "  Логи: sudo journalctl -u support-bot -f"
+        else
+            echo "⚠ Файл $SERVICE_FILE не найден, пропускаем настройку systemd"
+        fi
+    fi
+fi
+
 echo ""
 echo "========================================"
 echo "   Установка завершена!"
@@ -98,9 +128,16 @@ echo "   - SUPPORT_CHAT_ID (ID группы/канала для поддержк
 echo "   - ADMIN_IDS (ваш Telegram ID, можно несколько через запятую)"
 echo ""
 echo "2. Запустите бота:"
-echo "   $PYTHON_CMD bot.py"
-echo ""
-echo "   Или через Docker:"
-echo "   docker-compose up -d"
+if [ -f "/etc/systemd/system/support-bot.service" ]; then
+    echo "   sudo systemctl start support-bot"
+    echo "   (или для теста: $PYTHON_CMD bot.py)"
+else
+    echo "   $PYTHON_CMD bot.py"
+    echo ""
+    echo "   Для автозапуска на VPS используйте:"
+    echo "   - screen/tmux для сессий"
+    echo "   - systemd service (см. README.md)"
+    echo "   - Docker: docker-compose up -d"
+fi
 echo ""
 

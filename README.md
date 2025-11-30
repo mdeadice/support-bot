@@ -4,7 +4,71 @@ Telegram бот для организации системы поддержки 
 
 ## 🚀 Быстрая установка
 
-### Windows
+### 🖥️ Установка на VPS (Linux)
+
+> 📖 **Подробная инструкция:** См. [VPS_SETUP.md](VPS_SETUP.md)
+
+```bash
+# Подключитесь к VPS по SSH
+ssh user@your-vps-ip
+
+# Обновите систему
+sudo apt update && sudo apt upgrade -y
+
+# Установите необходимые пакеты
+sudo apt install -y python3 python3-pip git
+
+# Клонируйте репозиторий
+git clone https://github.com/mdeadice/support-bot.git
+cd support-bot
+
+# Запустите установщик
+bash install.sh
+
+# Настройте .env файл
+nano .env
+# Заполните BOT_TOKEN, SUPPORT_CHAT_ID, ADMIN_IDS
+
+# Настройте автозапуск через systemd
+sudo cp support-bot.service /etc/systemd/system/
+sudo nano /etc/systemd/system/support-bot.service
+# Измените пути: WorkingDirectory и ExecStart на ваш путь
+
+# Включите и запустите сервис
+sudo systemctl daemon-reload
+sudo systemctl enable support-bot
+sudo systemctl start support-bot
+
+# Проверьте статус
+sudo systemctl status support-bot
+
+# Просмотр логов
+sudo journalctl -u support-bot -f
+```
+
+### 🐳 Установка через Docker на VPS
+
+```bash
+# Установите Docker и Docker Compose
+sudo apt install -y docker.io docker-compose
+sudo systemctl enable docker
+sudo systemctl start docker
+
+# Клонируйте репозиторий
+git clone https://github.com/mdeadice/support-bot.git
+cd support-bot
+
+# Настройте .env файл
+nano .env
+
+# Запустите через Docker
+docker-compose up -d
+
+# Просмотр логов
+docker-compose logs -f
+```
+
+### 💻 Windows (локально)
 
 ```powershell
 # Клонируйте репозиторий
@@ -15,7 +79,7 @@ cd support-bot
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-### Linux / Mac
+### 🐧 Linux / Mac (локально)
 
 ```bash
 # Клонируйте репозиторий
@@ -78,7 +142,26 @@ ID администраторов (через запятую, без пробе�
 
 ## 🏃 Запуск
 
-### Обычный запуск
+### На VPS (рекомендуется через systemd)
+
+```bash
+# Запуск сервиса
+sudo systemctl start support-bot
+
+# Остановка
+sudo systemctl stop support-bot
+
+# Перезапуск
+sudo systemctl restart support-bot
+
+# Статус
+sudo systemctl status support-bot
+
+# Логи
+sudo journalctl -u support-bot -f
+```
+
+### Обычный запуск (для тестирования)
 
 ```bash
 python bot.py
@@ -101,6 +184,22 @@ docker-compose logs -f
 
 # Остановка
 docker-compose down
+```
+
+### Запуск в фоне (screen/tmux)
+
+```bash
+# Установите screen
+sudo apt install screen
+
+# Создайте сессию
+screen -S support-bot
+
+# Запустите бота
+python3 bot.py
+
+# Отключитесь: Ctrl+A, затем D
+# Подключитесь обратно: screen -r support-bot
 ```
 
 ## 📖 Основные функции
@@ -185,10 +284,43 @@ support-bot/
 
 ## 🔄 Обновление
 
-Для обновления бота:
+### Обновление на VPS (systemd)
 
 ```bash
-# Остановите бота (Ctrl+C или docker-compose down)
+# Остановите сервис
+sudo systemctl stop support-bot
+
+# Обновите код
+cd /path/to/support-bot
+git pull
+
+# Обновите зависимости
+pip3 install -r requirements.txt --upgrade
+
+# Запустите снова
+sudo systemctl start support-bot
+
+# Проверьте статус
+sudo systemctl status support-bot
+```
+
+### Обновление через Docker
+
+```bash
+# Остановите контейнер
+docker-compose down
+
+# Обновите код
+git pull
+
+# Пересоберите и запустите
+docker-compose up -d --build
+```
+
+### Обычное обновление
+
+```bash
+# Остановите бота (Ctrl+C)
 
 # Обновите код
 git pull

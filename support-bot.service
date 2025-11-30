@@ -1,0 +1,22 @@
+[Unit]
+Description=Support Bot - Telegram бот для поддержки
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/support-bot
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/python3 /opt/support-bot/bot.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Безопасность (опционально, раскомментируйте если используете отдельного пользователя)
+# User=support-bot
+# Group=support-bot
+
+[Install]
+WantedBy=multi-user.target
+
