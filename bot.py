@@ -349,6 +349,7 @@ async def copy_message_with_retry(msg: Message, dest_chat_id: int, thread_id: in
 async def check_access(msg_or_call) -> bool:
     user_id = msg_or_call.from_user.id
     if user_id in BANNED_USERS_CACHE:
+        logging.info(f"User {user_id} is in BANNED_USERS_CACHE. Total banned: {len(BANNED_USERS_CACHE)}")
         ban_text = await get_ban_message_text()
         try:
             if isinstance(msg_or_call, Message): await msg_or_call.answer(ban_text)
@@ -799,6 +800,44 @@ async def cmd_unban_user(msg: Message):
             await asyncio.sleep(0.5)
             await safe_api_call(bot.close_forum_topic(chat_id=SUPPORT_CHAT_ID, message_thread_id=topic_id))
         except: pass
+
+@dp.message(Command("checkban"), F.chat.id == SUPPORT_CHAT_ID)
+async def cmd_check_ban(msg: Message):
+    """Проверка, забанен ли пользователь"""
+    args = msg.text.split(maxsplit=1)
+    if len(args) < 2:
+        return await msg.reply("❌ Используйте: /checkban USER_ID")
+    
+    try:
+        user_id = int(args[1])
+    except ValueError:
+        return await msg.reply("❌ ID должен быть числом.")
+    
+    is_banned_in_cache = user_id in BANNED_USERS_CACHE
+    
+    # Проверяем в БД
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM banned_users WHERE user_id = ?", (user_id,)) as cursor:
+            ban_info = await cursor.fetchone()
+    
+    if is_banned_in_cache or ban_info:
+        reason = ban_info['reason'] if ban_info else "Не указана"
+        admin_id = ban_info['admin_id'] if ban_info else "Неизвестно"
+        banned_at = ban_info['banned_at'] if ban_info else "Неизвестно"
+        
+        response = (
+            f"⛔ <b>Пользователь {user_id} ЗАБАНЕН</b>\n\n"
+            f"В кеше: {'Да' if is_banned_in_cache else 'Нет'}\n"
+            f"В БД: {'Да' if ban_info else 'Нет'}\n"
+            f"Причина: {reason}\n"
+            f"Забанен админом: {admin_id}\n"
+            f"Дата: {banned_at}"
+        )
+    else:
+        response = f"✅ Пользователь {user_id} НЕ забанен"
+    
+    await msg.reply(response)
 
 # === АДМИНКА ===
 @dp.message(Command("admin"), F.chat.type == "private")
@@ -1370,6 +1409,8 @@ async def on_startup():
     await reindex_faq_sort()
     banned = await get_banned_list_db()
     BANNED_USERS_CACHE.update(banned)
+    if banned:
+        logging.info(f"Загружено банов из БД: {len(banned)}. IDs: {list(banned)[:10]}")  # Показываем первые 10
     rows = await get_active_tickets_db()
     for row in rows:
         uid, tid = row['user_id'], row['topic_id']
