@@ -20,15 +20,11 @@ if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/
     exit 1
 fi
 
-# Проверка, что мы в правильной директории
-if [ ! -f "docker-compose.yml" ]; then
-    echo -e "${RED}Ошибка: docker-compose.yml не найден!${NC}"
-    echo "Убедитесь, что вы находитесь в директории с ботом."
-    exit 1
+# Остановка бота, если он запущен (docker-compose.yml может еще не существовать)
+if [ -f "docker-compose.yml" ]; then
+    echo -e "${YELLOW}Остановка бота...${NC}"
+    docker-compose down 2>/dev/null || docker compose down 2>/dev/null
 fi
-
-echo -e "${YELLOW}Остановка бота...${NC}"
-docker-compose down 2>/dev/null || docker compose down 2>/dev/null
 
 # Защита базы данных - создаем резервную копию перед обновлением
 if [ -f "bot/bot.db" ]; then
@@ -44,13 +40,13 @@ mkdir -p bot
 
 # Скачивание обновленных файлов
 echo -e "Скачивание bot.py..."
-curl -sL -o bot/bot.py https://raw.githubusercontent.com/mdeadice/support-bot/main/bot.py
+curl -sL -o bot/bot.py https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/bot.py || curl -sL -o bot/bot.py https://raw.githubusercontent.com/mdeadice/support-bot/main/bot.py
 echo -e "Скачивание docker-compose.yml..."
-curl -s -o docker-compose.yml https://raw.githubusercontent.com/mdeadice/support-bot/main/docker-compose.yml
+curl -s -o docker-compose.yml https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/docker-compose.yml || curl -s -o docker-compose.yml https://raw.githubusercontent.com/mdeadice/support-bot/main/docker-compose.yml
 echo -e "Скачивание requirements.txt..."
-curl -s -o requirements.txt https://raw.githubusercontent.com/mdeadice/support-bot/main/requirements.txt
+curl -s -o requirements.txt https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/requirements.txt || curl -s -o requirements.txt https://raw.githubusercontent.com/mdeadice/support-bot/main/requirements.txt
 echo -e "Скачивание Dockerfile..."
-curl -s -o Dockerfile https://raw.githubusercontent.com/mdeadice/support-bot/main/Dockerfile
+curl -s -o Dockerfile https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/Dockerfile || curl -s -o Dockerfile https://raw.githubusercontent.com/mdeadice/support-bot/main/Dockerfile
 
 # Проверка успешности скачивания
 if [ ! -f "bot/bot.py" ] || [ ! -f "docker-compose.yml" ] || [ ! -f "requirements.txt" ] || [ ! -f "Dockerfile" ]; then
