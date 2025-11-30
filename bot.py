@@ -108,12 +108,24 @@ async def ban_user_db(user_id: int, reason: str, admin_id: int):
         await db.commit()
 
 async def unban_user_db(user_id: int):
+    """Разбанивает пользователя синхронно - удаляет из БД и кеша"""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM banned_users WHERE user_id=?", (user_id,))
         await db.commit()
-    # Принудительно удаляем из кеша
+    
+    # СРАЗУ удаляем из кеша (синхронно, до возврата из функции)
+    was_in_cache = user_id in BANNED_USERS_CACHE
     BANNED_USERS_CACHE.discard(user_id)
-    logging.info(f"User {user_id} unbanned. Removed from cache. Cache size: {len(BANNED_USERS_CACHE)}")
+    
+    # Проверяем что действительно удалено
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id FROM banned_users WHERE user_id = ?", (user_id,)) as cursor:
+            still_banned = await cursor.fetchone() is not None
+    
+    if still_banned:
+        logging.error(f"User {user_id} still in DB after unban! This should not happen.")
+    else:
+        logging.info(f"User {user_id} unbanned. Was in cache: {was_in_cache}, Removed from cache. Cache size: {len(BANNED_USERS_CACHE)}")
 
 async def get_banned_list_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -352,20 +364,28 @@ async def copy_message_with_retry(msg: Message, dest_chat_id: int, thread_id: in
 async def check_access(msg_or_call) -> bool:
     user_id = msg_or_call.from_user.id
     
-    # Проверяем кеш
-    if user_id in BANNED_USERS_CACHE:
-        # Дополнительная проверка в БД на случай рассинхронизации
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT user_id FROM banned_users WHERE user_id = ?", (user_id,)) as cursor:
-                row = await cursor.fetchone()
-                if not row:
-                    # Пользователь не в БД, но в кеше - исправляем
-                    logging.warning(f"User {user_id} was in cache but not in DB. Removing from cache.")
-                    BANNED_USERS_CACHE.discard(user_id)
-                    return True  # Разрешаем доступ
-        
-        # Пользователь действительно забанен
-        logging.info(f"User {user_id} is banned (in cache and DB). Total banned: {len(BANNED_USERS_CACHE)}")
+    # ВСЕГДА проверяем БД при каждом обращении (для надежности)
+    # Это гарантирует, что разбан применяется сразу
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id FROM banned_users WHERE user_id = ?", (user_id,)) as cursor:
+            is_banned_in_db = await cursor.fetchone() is not None
+    
+    # Синхронизируем кеш с БД
+    if is_banned_in_db:
+        # Пользователь в БД - добавляем в кеш если его там нет
+        if user_id not in BANNED_USERS_CACHE:
+            BANNED_USERS_CACHE.add(user_id)
+            logging.info(f"User {user_id} found in DB but not in cache. Added to cache.")
+    else:
+        # Пользователь НЕ в БД - удаляем из кеша если он там есть
+        if user_id in BANNED_USERS_CACHE:
+            BANNED_USERS_CACHE.discard(user_id)
+            logging.info(f"User {user_id} not in DB but was in cache. Removed from cache.")
+    
+    # Теперь проверяем актуальное состояние
+    if is_banned_in_db or user_id in BANNED_USERS_CACHE:
+        # Пользователь забанен
+        logging.info(f"User {user_id} is banned. DB: {is_banned_in_db}, Cache: {user_id in BANNED_USERS_CACHE}")
         ban_text = await get_ban_message_text()
         try:
             if isinstance(msg_or_call, Message): await msg_or_call.answer(ban_text)
