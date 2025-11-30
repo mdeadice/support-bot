@@ -6,7 +6,14 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+BOT_DIR="/opt/support-bot"
+
 echo -e "${GREEN}=== Обновление Support Bot ===${NC}\n"
+
+# Проверка прав root
+if [ "$EUID" -ne 0 ]; then 
+    echo -e "${YELLOW}Предупреждение: Рекомендуется запускать от root (sudo)${NC}"
+fi
 
 # Проверка наличия Docker
 if ! command -v docker &> /dev/null; then
@@ -20,7 +27,18 @@ if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/
     exit 1
 fi
 
-# Остановка бота, если он запущен (docker-compose.yml может еще не существовать)
+# Проверка существования директории
+if [ ! -d "$BOT_DIR" ]; then
+    echo -e "${RED}Ошибка: Бот не установлен в $BOT_DIR${NC}"
+    echo -e "${YELLOW}Сначала выполните установку:${NC}"
+    echo "curl -sSL https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/install.sh | bash"
+    exit 1
+fi
+
+# Переход в директорию
+cd "$BOT_DIR" || exit 1
+
+# Остановка бота, если он запущен
 if [ -f "docker-compose.yml" ]; then
     echo -e "${YELLOW}Остановка бота...${NC}"
     docker-compose down 2>/dev/null || docker compose down 2>/dev/null
@@ -41,10 +59,13 @@ mkdir -p bot
 # Скачивание обновленных файлов
 echo -e "Скачивание bot.py..."
 curl -sL -o bot/bot.py https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/bot.py || curl -sL -o bot/bot.py https://raw.githubusercontent.com/mdeadice/support-bot/main/bot.py
+
 echo -e "Скачивание docker-compose.yml..."
 curl -s -o docker-compose.yml https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/docker-compose.yml || curl -s -o docker-compose.yml https://raw.githubusercontent.com/mdeadice/support-bot/main/docker-compose.yml
+
 echo -e "Скачивание requirements.txt..."
 curl -s -o requirements.txt https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/requirements.txt || curl -s -o requirements.txt https://raw.githubusercontent.com/mdeadice/support-bot/main/requirements.txt
+
 echo -e "Скачивание Dockerfile..."
 curl -s -o Dockerfile https://raw.githubusercontent.com/mdeadice/support-bot/main/bot/Dockerfile || curl -s -o Dockerfile https://raw.githubusercontent.com/mdeadice/support-bot/main/Dockerfile
 
@@ -64,5 +85,4 @@ echo -e "${YELLOW}Запуск бота...${NC}"
 docker-compose up -d 2>/dev/null || docker compose up -d 2>/dev/null
 
 echo -e "${GREEN}=== Обновление завершено! ===${NC}\n"
-echo -e "Просмотр логов: ${GREEN}docker-compose logs -f${NC}\n"
-
+echo -e "Просмотр логов: ${GREEN}cd $BOT_DIR && docker-compose logs -f${NC}\n"
