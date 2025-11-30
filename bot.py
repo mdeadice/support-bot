@@ -1572,6 +1572,21 @@ async def on_startup():
         db_size = os.path.getsize(DB_PATH)
         logging.info(f"DB file size: {db_size} bytes")
     
+    # Проверка содержимого БД до инициализации
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            # Проверяем, есть ли таблица faq и сколько в ней записей
+            async with db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='faq'") as cursor:
+                faq_table_exists = await cursor.fetchone() is not None
+            if faq_table_exists:
+                async with db.execute("SELECT COUNT(*) as count FROM faq") as cursor:
+                    row = await cursor.fetchone()
+                    faq_count_before = row['count'] if row else 0
+                    logging.info(f"FAQ records in DB before init: {faq_count_before}")
+    except Exception as e:
+        logging.warning(f"Could not check DB contents before init: {e}")
+    
     # Инициализация команд для операторов (в группе поддержки)
     commands = [
         BotCommand(command="ban", description="⛔ Бан пользователя"),
@@ -1592,6 +1607,26 @@ async def on_startup():
     # Проверка FAQ после инициализации
     faq_count = len(await get_faq_list())
     logging.info(f"Загружено FAQ из БД: {faq_count}")
+    
+    # Дополнительная диагностика: проверяем содержимое БД напрямую
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT COUNT(*) as count FROM faq") as cursor:
+                row = await cursor.fetchone()
+                direct_faq_count = row['count'] if row else 0
+                logging.info(f"Прямой запрос к БД: FAQ записей = {direct_faq_count}")
+            # Показываем первые 3 FAQ для диагностики
+            async with db.execute("SELECT id, question FROM faq LIMIT 3") as cursor:
+                rows = await cursor.fetchall()
+                if rows:
+                    logging.info(f"Примеры FAQ в БД:")
+                    for row in rows:
+                        logging.info(f"  - ID {row['id']}: {row['question'][:50]}...")
+                else:
+                    logging.warning("БД не содержит FAQ записей!")
+    except Exception as e:
+        logging.error(f"Ошибка при проверке содержимого БД: {e}")
     
     banned = await get_banned_list_db()
     BANNED_USERS_CACHE.update(banned)
