@@ -44,7 +44,7 @@ mkdir -p bot
 
 # Скачивание обновленных файлов
 echo -e "Скачивание bot.py..."
-curl -s -o bot/bot.py https://raw.githubusercontent.com/mdeadice/support-bot/main/bot.py
+curl -sL -o bot/bot.py https://raw.githubusercontent.com/mdeadice/support-bot/main/bot.py
 echo -e "Скачивание docker-compose.yml..."
 curl -s -o docker-compose.yml https://raw.githubusercontent.com/mdeadice/support-bot/main/docker-compose.yml
 echo -e "Скачивание requirements.txt..."
